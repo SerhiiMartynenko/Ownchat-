@@ -257,7 +257,7 @@
   </div>
 </div>
 
-<input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden>
+<input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden>
 
 <!-- Settings sheet -->
 <div class="overlay" id="settingsOverlay">
@@ -335,7 +335,7 @@
   /* ===== State ===== */
   var settings = { apiKey:"", model:"anthropic/claude-opus-4.8", thinking:"max", system:"" };
   var messages = [];
-  var attachment = null;
+  var attachments = [];
   var isStreaming = false;
   var currentAbort = null;
   var stick = true;
@@ -428,7 +428,8 @@
     try{
       var file = new File([blob], filename, { type:"text/markdown" });
       if(navigator.canShare && navigator.canShare({ files:[file] }) && navigator.share){
-        navigator.share({ files:[file], title:filename }).then(function(){}, function(err){
+        // Share ONLY the file. Passing title/text makes some targets save a second .txt of that text.
+        navigator.share({ files:[file] }).then(function(){}, function(err){
           if(err && err.name==="AbortError") return;
           anchorDownload(blob, filename);
         });
@@ -454,13 +455,16 @@
     bubble.className = "bubble";
     bubble.textContent = msg.display || "";
     node.appendChild(bubble);
-    if(msg.attachment && msg.attachment.name){
+    // Support multiple attachments; fall back to the legacy single `attachment` on old history.
+    var atts = msg.attachments || (msg.attachment ? [msg.attachment] : []);
+    atts.forEach(function(att){
+      if(!att || !att.name) return;
       var chip = document.createElement("div");
       chip.className = "file-chip";
       chip.innerHTML = ICON.file + "<span></span>";
-      chip.querySelector("span").textContent = msg.attachment.name;
+      chip.querySelector("span").textContent = att.name;
       node.appendChild(chip);
-    }
+    });
     var actions = document.createElement("div");
     actions.className = "msg-actions";
     var copy = document.createElement("button");
@@ -674,10 +678,16 @@
 
   /* ===== Conversation ===== */
   function buildUserContent(text){
-    if(attachment){
-      var note = text ? text : "(No message — please read the attached file and acknowledge it.)";
-      return 'The user attached a file named "' + attachment.name + '". Its contents:\n\n```\n' +
-             attachment.text + '\n```\n\n' + note;
+    if(attachments.length){
+      var plural = attachments.length > 1;
+      var note = text ? text : "(No message — please read the attached file" + (plural ? "s" : "") + " and acknowledge " + (plural ? "them" : "it") + ".)";
+      var blocks = attachments.map(function(att){
+        return 'File "' + att.name + '":\n\n```\n' + att.text + '\n```';
+      }).join("\n\n");
+      var header = plural
+        ? "The user attached " + attachments.length + " files.\n\n"
+        : "";
+      return header + blocks + "\n\n" + note;
     }
     return text;
   }
@@ -716,21 +726,21 @@
   function send(){
     if(isStreaming) return;
     var text = input.value.trim();
-    if(!text && !attachment) return;
+    if(!text && !attachments.length) return;
     if(!settings.apiKey){ toast("Add your OpenRouter API key first"); openSettings(); return; }
 
     var userMsg = {
       id: uid(), role: "user",
       display: text,
       content: buildUserContent(text),
-      attachment: attachment ? { name: attachment.name, size: attachment.size } : null
+      attachments: attachments.map(function(att){ return { name: att.name, size: att.size }; })
     };
     messages.push(userMsg);
     hideEmpty();
     buildUser(userMsg);
 
     input.value = ""; autoresize();
-    attachment = null; renderAttachmentChip();
+    attachments = []; renderAttachmentChips();
     saveHistory();
 
     stick = true; scrollBottom();
@@ -859,29 +869,31 @@
     if(!f) return;
     var reader = new FileReader();
     reader.onload = function(){
-      attachment = { name: f.name, size: f.size, text: String(reader.result) };
-      renderAttachmentChip();
+      attachments.push({ name: f.name, size: f.size, text: String(reader.result) });
+      renderAttachmentChips();
       toast("Attached " + f.name);
       input.focus();
     };
-    reader.onerror = function(){ toast("Could not read that file"); };
+    reader.onerror = function(){ toast("Could not read " + f.name); };
     reader.readAsText(f);
   }
-  function renderAttachmentChip(){
-    if(!attachment){ attachWrap.hidden = true; attachWrap.innerHTML = ""; return; }
+  function renderAttachmentChips(){
+    if(!attachments.length){ attachWrap.hidden = true; attachWrap.innerHTML = ""; return; }
     attachWrap.hidden = false;
     attachWrap.innerHTML = "";
-    var chip = document.createElement("div");
-    chip.className = "attach-chip";
-    chip.innerHTML = ICON.file + '<span class="ac-name"></span><span class="ac-size"></span>';
-    chip.querySelector(".ac-name").textContent = attachment.name;
-    chip.querySelector(".ac-size").textContent = fmtBytes(attachment.size);
-    chip.querySelector(".ac-name").addEventListener("click", function(){ openReader(attachment.text, attachment.name); });
-    var rm = document.createElement("button");
-    rm.className = "ac-remove"; rm.type = "button"; rm.innerHTML = ICON.close; rm.setAttribute("aria-label","Remove file");
-    rm.addEventListener("click", function(){ attachment = null; renderAttachmentChip(); });
-    chip.appendChild(rm);
-    attachWrap.appendChild(chip);
+    attachments.forEach(function(att, i){
+      var chip = document.createElement("div");
+      chip.className = "attach-chip";
+      chip.innerHTML = ICON.file + '<span class="ac-name"></span><span class="ac-size"></span>';
+      chip.querySelector(".ac-name").textContent = att.name;
+      chip.querySelector(".ac-size").textContent = fmtBytes(att.size);
+      chip.querySelector(".ac-name").addEventListener("click", function(){ openReader(att.text, att.name); });
+      var rm = document.createElement("button");
+      rm.className = "ac-remove"; rm.type = "button"; rm.innerHTML = ICON.close; rm.setAttribute("aria-label","Remove file");
+      rm.addEventListener("click", function(){ attachments.splice(i, 1); renderAttachmentChips(); });
+      chip.appendChild(rm);
+      attachWrap.appendChild(chip);
+    });
   }
 
   /* ===== Reader ===== */
@@ -962,9 +974,9 @@
 
     attachBtn.addEventListener("click", function(){ fileInput.click(); });
     fileInput.addEventListener("change", function(e){
-      var f = e.target.files && e.target.files[0];
-      handleFile(f);
-      fileInput.value = ""; // allow re-picking the same file
+      var files = e.target.files ? Array.prototype.slice.call(e.target.files) : [];
+      files.forEach(handleFile);
+      fileInput.value = ""; // allow re-picking the same file(s)
     });
 
     $("openSettings").addEventListener("click", openSettings);

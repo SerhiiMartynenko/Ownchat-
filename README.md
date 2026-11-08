@@ -52,13 +52,19 @@ iCloud Private Relay and some countries/regions are the usual triggers. No
 change to this app's code can make Cloudflare accept a path it has decided to
 block, so the fixes are on the network side.
 
-**Remedies, in order:**
+**What the app does about it.** When the direct call is blocked, the app
+retries the same request once through the owner's personal proxy
+(`https://ownchat-proxy.ownchat-serhii.workers.dev`, deployed from
+`proxy/cloudflare-worker.js`) and, if that works, saves it as the endpoint in
+Settings → Advanced so later messages go straight to the proxy. Clear that
+field to go back to direct calls. The proxy only accepts requests from this
+site's origin and never stores the key.
 
-1. Turn off your VPN and/or iCloud Private Relay
-   (iOS: Settings → [your name] → iCloud → Private Relay), then retry.
-2. Try another network (e.g. mobile data instead of Wi-Fi, or vice versa).
-3. If it is still blocked, deploy the optional personal proxy below and point
-   the app at it.
+**If the proxy is blocked too, remedies in order:**
+
+1. Try another network (e.g. mobile data instead of Wi-Fi, or vice versa), or
+   turn off a VPN / iCloud Private Relay for a moment to confirm the cause.
+2. Deploy your own copy of the proxy (below) and set it in Settings → Advanced.
 
 ### Optional personal proxy (Cloudflare Worker)
 

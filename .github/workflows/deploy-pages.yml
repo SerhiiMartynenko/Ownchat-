@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - claude/github-pages-chat-deploy-h64nfp
-      - claude/adoring-hamilton-cq46ew
       - main
   workflow_dispatch:
 

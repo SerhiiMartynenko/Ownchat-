@@ -119,3 +119,11 @@ and no `main` exists). To publish this work: Actions → "Deploy to GitHub Pages
 ## Out of scope
 
 Changing how the key is stored, adding a required backend, changing the history format (`orchat.history.v1`).
+
+## Follow-up (2026-11-08, after deploy)
+
+The owner confirmed the block persists with their protection tools on and chose to keep them. A personal proxy
+was deployed through the Cloudflare API to the owner's account as Worker `ownchat-proxy` with
+`ALLOWED_ORIGINS=https://serhiimartynenko.github.io`, reachable at
+`https://ownchat-proxy.ownchat-serhii.workers.dev`. The app now retries a blocked direct call once through that
+proxy (`FALLBACK_PROXY_URL`) and persists it as the endpoint on success, so no manual setting is needed.

@@ -315,6 +315,9 @@
 (function(){
   /* ===== Constants ===== */
   var DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
+  // Personal proxy (proxy/cloudflare-worker.js) used automatically when the browser's direct
+  // request to OpenRouter is blocked before it gets a response (e.g. by Cloudflare bot protection).
+  var FALLBACK_PROXY_URL = "https://ownchat-proxy.ownchat-serhii.workers.dev/api/v1/chat/completions";
   var LS_SET = "orchat.settings.v1";
   var LS_HIST = "orchat.history.v1";
 
@@ -610,6 +613,7 @@
 
     var url = apiUrl();
     var retried = false;
+    var usedFallback = false;
     function post(){
       return fetch(url, {
         method: "POST",
@@ -690,15 +694,28 @@
       return pump();
     }
 
+    function blocked(e){ return e instanceof TypeError && !(controller.signal && controller.signal.aborted); }
+
     return post().then(handle).catch(function(e){
+      // Direct call never got a response: retry once through the personal proxy. Nothing has streamed yet.
+      if(blocked(e) && FALLBACK_PROXY_URL && url !== FALLBACK_PROXY_URL){
+        url = FALLBACK_PROXY_URL; usedFallback = true;
+        return post().then(handle);
+      }
+      throw e;
+    }).catch(function(e){
       if(e && e.name === "AbortError"){ state.aborted = true; return; }
-      if(e instanceof TypeError && !(controller.signal && controller.signal.aborted)){
-        throw new Error("Request was blocked before it reached OpenRouter (CORS preflight failed). Try turning off a VPN or iCloud Private Relay, or set a proxy endpoint in Settings \u2192 Advanced. (" + (e.message || String(e)) + ")");
+      if(blocked(e)){
+        throw new Error("Request was blocked before it reached OpenRouter (CORS preflight failed)" + (usedFallback ? ", and the proxy could not be reached either" : "") + ". Try another network, or set a proxy endpoint in Settings \u2192 Advanced. (" + (e.message || String(e)) + ")");
       }
       throw e;
     }).then(function(){
       if(els._timer){ clearInterval(els._timer); els._timer = null; }
       currentAbort = null;
+      if(usedFallback && !state.aborted && settings.endpoint !== FALLBACK_PROXY_URL){
+        settings.endpoint = FALLBACK_PROXY_URL; saveSettings();
+        toast("Direct OpenRouter calls are blocked here. Switched to your proxy (Settings \u2192 Advanced).");
+      }
       if(!state.thinkMs && state.thinking) state.thinkMs = Date.now() - started;
       return state;
     });

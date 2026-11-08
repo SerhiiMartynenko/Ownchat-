@@ -351,7 +351,7 @@
   var input=$("input"), sendBtn=$("send"), attachBtn=$("attachBtn"), fileInput=$("fileInput");
   var attachWrap=$("attachWrap"), pillText=$("pillText");
   var settingsOverlay=$("settingsOverlay"), setKey=$("setKey"), setModel=$("setModel"),
-      setSystem=$("setSystem"), thinkSeg=$("thinkSeg"), toastEl=$("toast");
+      setSystem=$("setSystem"), setEndpoint=$("setEndpoint"), thinkSeg=$("thinkSeg"), toastEl=$("toast");
   var reader=$("reader"), readerBody=$("readerBody"), readerTitle=$("readerTitle");
   var currentReaderMd = "";
 
@@ -867,13 +867,14 @@
   }
   function closeSettings(){ settingsOverlay.classList.remove("open"); }
   function saveSettingsForm(){
+    var ep = setEndpoint.value.trim();
+    if(!validEndpoint(ep)){ setEndpoint.value = settings.endpoint || ""; toast("Endpoint must start with https://"); return; }
+    settings.endpoint = ep;
     settings.apiKey = setKey.value.trim();
     settings.model = setModel.value.trim() || "x-ai/grok-4.7";
     settings.system = setSystem.value;
     settings.thinking = pendingThink;
-    var ep = setEndpoint.value.trim();
-    if(validEndpoint(ep)){ settings.endpoint = ep; saveSettings(); updatePill(); closeSettings(); toast("Settings saved"); }
-    else { setEndpoint.value = settings.endpoint || ""; saveSettings(); updatePill(); toast("Endpoint must start with https://"); }
+    saveSettings(); updatePill(); closeSettings(); toast("Settings saved");
   }
 
   function renderPresets(){

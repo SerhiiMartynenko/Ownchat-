@@ -5,7 +5,9 @@ using your own API key. Presets include Grok 4.7 (the default) and Grok 4.5, plu
 Claude Opus 4.8 / Opus 4.8 fast / Sonnet 4.6 / Haiku 4.5; any other OpenRouter
 model slug can be typed in. The key and chat
 history stay in your browser's `localStorage` and are sent directly to
-OpenRouter — there's no backend.
+OpenRouter — there's no backend. (If your network is blocked from calling
+OpenRouter directly, you can optionally point the app at a tiny personal proxy;
+see [Troubleshooting](#troubleshooting-preflight-response-is-not-successful-403).)
 
 ## Features
 
@@ -24,6 +26,80 @@ OpenRouter — there's no backend.
 
 > Your API key lives only in this browser. Anyone with access to the device can
 > read it from `localStorage`, so don't add a key on a shared machine.
+
+## Troubleshooting: Preflight response is not successful (403)
+
+Safari / Chrome console shows something like:
+
+```
+Preflight response is not successful. Status code: 403
+Fetch API cannot load https://openrouter.ai/api/v1/chat/completions due to access control checks.
+```
+
+and the app says *"Request was blocked before it reached OpenRouter"*.
+
+**What it means.** Before sending your message the browser makes a CORS
+"preflight" (`OPTIONS`) request. That preflight was answered with 403, so the
+browser never sent the real request. Your key and message did not reach
+OpenRouter.
+
+**What it is not.** OpenRouter's CORS policy is fine: a normal preflight from
+this site's origin gets `204` with `Access-Control-Allow-Origin: *` and allows
+the `Authorization` and `Content-Type` headers (the only two the app sends).
+The 403 comes from the Cloudflare bot / IP / region protection in front of
+openrouter.ai rejecting *your particular browser and network path*. VPNs,
+iCloud Private Relay and some countries/regions are the usual triggers. No
+change to this app's code can make Cloudflare accept a path it has decided to
+block, so the fixes are on the network side.
+
+**Remedies, in order:**
+
+1. Turn off your VPN and/or iCloud Private Relay
+   (iOS: Settings → [your name] → iCloud → Private Relay), then retry.
+2. Try another network (e.g. mobile data instead of Wi-Fi, or vice versa).
+3. If it is still blocked, deploy the optional personal proxy below and point
+   the app at it.
+
+### Optional personal proxy (Cloudflare Worker)
+
+[`proxy/cloudflare-worker.js`](proxy/cloudflare-worker.js) is a ~90-line,
+dependency-free Worker. It answers the preflight itself, forwards `POST`s under
+`/api/v1/` to `https://openrouter.ai`, streams the response back and adds CORS
+headers for an allow-list of origins. It copies only the `Authorization` and
+`Content-Type` headers; your key is forwarded in that header and is never
+stored or logged by the proxy.
+
+Deploy from the dashboard (free tier is enough):
+
+1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Create Worker**
+   (start from "Hello World"), give it a name, **Deploy**.
+2. **Edit code**, replace everything with the contents of
+   `proxy/cloudflare-worker.js`, **Deploy**.
+3. Worker → **Settings → Variables and Secrets** → add a text variable
+   `ALLOWED_ORIGINS` = `https://serhiimartynenko.github.io` (comma-separate
+   more origins, e.g. `http://localhost:8000`, if you need them). If unset it
+   defaults to that origin.
+4. **Deploy** again so the variable takes effect.
+
+Or from a terminal: `npx wrangler deploy proxy/cloudflare-worker.js --name ownchat-proxy --compatibility-date 2026-01-01`
+(then set `ALLOWED_ORIGINS` in the dashboard or with `--var ALLOWED_ORIGINS:https://serhiimartynenko.github.io`).
+
+Then in the app: **Settings → Advanced → API endpoint (optional proxy)** =
+
+```
+https://<your-worker>.<your-subdomain>.workers.dev/api/v1/chat/completions
+```
+
+and **Save**. Clear the field to go back to calling OpenRouter directly.
+
+**Alternative host: Deno Deploy.** A Worker's outbound request to OpenRouter
+also passes through Cloudflare and can be blocked if the Worker runs in a
+blocked region. In that case deploy the same code on Deno Deploy instead:
+create a project from this repo with entry point `proxy/deno.ts`, set
+`ALLOWED_ORIGINS`, and use `https://<project>.deno.dev/api/v1/chat/completions`
+as the endpoint.
+
+Proxy tests (Node 20+): `node --test proxy/cloudflare-worker.test.mjs`
 
 ## Deploying on GitHub Pages
 

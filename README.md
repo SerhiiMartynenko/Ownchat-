@@ -1,7 +1,9 @@
 # Ownchat
 
 A single-file, mobile-first chat web app that talks to **OpenRouter** models
-(Claude Opus/Sonnet/Haiku and others) using your own API key. The key and chat
+using your own API key. Presets include Grok 4.7 (the default) and Grok 4.5, plus
+Claude Opus 4.8 / Opus 4.8 fast / Sonnet 4.6 / Haiku 4.5; any other OpenRouter
+model slug can be typed in. The key and chat
 history stay in your browser's `localStorage` and are sent directly to
 OpenRouter — there's no backend.
 

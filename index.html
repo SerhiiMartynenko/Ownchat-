@@ -12,9 +12,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Claude">
+<meta name="apple-mobile-web-app-title" content="Ownchat">
 
-<title>Claude · Chat</title>
+<title>Ownchat</title>
 
 <!-- Markdown rendering + sanitiser (model HTML must never hit innerHTML unsanitised) -->
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
@@ -176,7 +176,7 @@
   .sheet h2{font-size:18px;font-weight:700;letter-spacing:-.01em;margin:6px 2px 16px}
   .sheet label{display:block;font-size:12.5px;color:var(--dim);font-weight:600;margin:16px 2px 7px;text-transform:uppercase;letter-spacing:.04em}
   .field{display:flex;gap:8px}
-  .sheet input[type=text],.sheet input[type=password],.sheet textarea{flex:1;width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:12px 14px;font-size:16px;outline:none;font-family:inherit}
+  .sheet input[type=text],.sheet input[type=password],.sheet input[type=url],.sheet textarea{flex:1;width:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;color:var(--text);padding:12px 14px;font-size:16px;outline:none;font-family:inherit}
   .sheet input:focus,.sheet textarea:focus{border-color:#39414e}
   .sheet textarea{min-height:84px;resize:vertical;line-height:1.5}
   .ghost-btn{padding:0 14px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border);color:var(--dim);font-size:13px;font-weight:600;flex:none}
@@ -189,6 +189,7 @@
   .seg{display:flex;background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:3px;gap:3px}
   .seg button{flex:1;padding:9px 4px;border-radius:9px;font-size:13px;font-weight:600;color:var(--dim);transition:.15s}
   .seg button.on{background:var(--accent);color:#1a1206}
+  .sheet-sub{font-size:14px;font-weight:700;color:var(--dim);margin:26px 2px 0;padding-top:16px;border-top:1px solid var(--border)}
   .sheet-actions{display:flex;gap:10px;margin-top:24px}
   .sheet-actions button{flex:1;padding:14px;border-radius:13px;font-size:15px;font-weight:700}
   .btn-primary{background:var(--accent);color:#1a1206}
@@ -218,10 +219,10 @@
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
     <div class="title-wrap">
-      <div class="monogram"><b>C</b></div>
+      <div class="monogram"><b>O</b></div>
       <div class="titles">
-        <div class="app-title">Claude</div>
-        <button class="model-pill" id="modelPill"><span class="pdot"></span><span id="pillText">opus 4.8 · max-think</span><span class="chev">▾</span></button>
+        <div class="app-title">Ownchat</div>
+        <button class="model-pill" id="modelPill"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
       </div>
     </div>
     <button class="hbtn" id="openSettings" aria-label="Settings" title="Settings">
@@ -232,9 +233,9 @@
   <div id="scroll">
     <div id="list"></div>
     <div id="empty">
-      <div class="ehero"><b>C</b></div>
+      <div class="ehero"><b>O</b></div>
       <h1>Private chat</h1>
-      <p>Talk to Claude Opus 4.8 through your own OpenRouter key. Your key and history stay on this device.</p>
+      <p>Talk to Grok, Claude and other OpenRouter models with your own key. Your key and history stay on this device.</p>
       <div class="chips" id="starters"></div>
       <button class="ebtn" id="emptyKey">Add API key</button>
     </div>
@@ -249,7 +250,7 @@
       <button class="cbtn" id="attachBtn" aria-label="Attach a .md or .txt file">
         <svg class="ic" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.48"/></svg>
       </button>
-      <textarea id="input" rows="1" placeholder="Message Claude…" enterkeyhint="enter" autocapitalize="sentences" spellcheck="true"></textarea>
+      <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter" autocapitalize="sentences" spellcheck="true"></textarea>
       <button class="send" id="send" aria-label="Send">
         <svg class="ic" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
       </button>
@@ -271,7 +272,7 @@
     </div>
     <p class="hint">Saved only in this browser (localStorage) and sent directly to OpenRouter. <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Get a key ↗</a></p>
     <label for="setModel">Model</label>
-    <input type="text" id="setModel" placeholder="anthropic/claude-opus-4.8" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input type="text" id="setModel" placeholder="x-ai/grok-4.7" autocapitalize="off" autocorrect="off" spellcheck="false">
     <div class="presets" id="presets"></div>
     <label>Thinking</label>
     <div class="seg" id="thinkSeg">
@@ -282,6 +283,10 @@
     </div>
     <label for="setSystem">System prompt (optional)</label>
     <textarea id="setSystem" placeholder="e.g. You are a concise writing partner."></textarea>
+    <h3 class="sheet-sub">Advanced</h3>
+    <label for="setEndpoint">API endpoint (optional proxy)</label>
+    <input type="url" id="setEndpoint" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <p class="hint">Leave empty to call OpenRouter directly. Set this only if your browser is blocked (see README → Troubleshooting).</p>
     <div class="sheet-actions">
       <button class="btn-secondary" id="setCancel" type="button">Cancel</button>
       <button class="btn-primary" id="setSave" type="button">Save</button>
@@ -309,8 +314,7 @@
 "use strict";
 (function(){
   /* ===== Constants ===== */
-  var API_URL = "https://openrouter.ai/api/v1/chat/completions";
-  var APP_TITLE = "Claude iOS";
+  var DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
   var LS_SET = "orchat.settings.v1";
   var LS_HIST = "orchat.history.v1";
 
@@ -325,7 +329,7 @@
     arrow:'<svg class="ic" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
     stop:'<svg class="ic" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>'
   };
-  var MODEL_PRESETS = ["anthropic/claude-opus-4.8","anthropic/claude-opus-4.8-fast","anthropic/claude-sonnet-4.6","anthropic/claude-haiku-4.5"];
+  var MODEL_PRESETS = ["x-ai/grok-4.7","x-ai/grok-4.5","anthropic/claude-opus-4.8","anthropic/claude-opus-4.8-fast","anthropic/claude-sonnet-4.6","anthropic/claude-haiku-4.5"];
   var STARTERS = [
     "Write the first chapter of a short story about a lighthouse keeper.",
     "Explain how SSH key authentication works, simply.",
@@ -333,7 +337,7 @@
   ];
 
   /* ===== State ===== */
-  var settings = { apiKey:"", model:"anthropic/claude-opus-4.8", thinking:"max", system:"" };
+  var settings = { apiKey:"", model:"x-ai/grok-4.7", thinking:"max", system:"", endpoint:"" };
   var messages = [];
   var attachments = [];
   var isStreaming = false;
@@ -385,6 +389,16 @@
     if(level==="high")   return { budget:16000, max:40000 };
     return { budget:32000, max:64000 };
   }
+  // Anthropic models take a token budget; others (Grok, OpenAI, ...) take an effort level.
+  function applyReasoning(body, model, level){
+    var rc = reasoningConfig(level);
+    if(!rc){ body.max_tokens = 16000; return; }
+    body.max_tokens = rc.max;
+    if(/^anthropic\//i.test(model || "")) body.reasoning = { max_tokens: rc.budget };
+    else body.reasoning = { effort: level === "medium" ? "medium" : "high" };
+  }
+  function apiUrl(){ return (settings.endpoint && settings.endpoint.trim()) || DEFAULT_API_URL; }
+  function validEndpoint(u){ return !u || /^https:\/\//i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u); }
 
   /* ===== Markdown ===== */
   if(window.marked && marked.setOptions){ marked.setOptions({ gfm:true, breaks:true }); }
@@ -416,7 +430,7 @@
     return line.replace(/[#*_>`\-]/g,"").slice(0,60) || "Document";
   }
   function slugFilename(content){
-    var slug = firstHeading(content).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,60) || "claude-note";
+    var slug = firstHeading(content).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,60) || "ownchat-note";
     var d=new Date();
     var stamp = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
     return slug+"-"+stamp+".md";
@@ -582,10 +596,8 @@
     var started = Date.now();
     var controller = new AbortController();
     currentAbort = controller;
-    var rc = reasoningConfig(settings.thinking);
     var body = { model: settings.model, messages: api, stream: true };
-    if(rc){ body.reasoning = { max_tokens: rc.budget }; body.max_tokens = rc.max; }
-    else { body.max_tokens = 16000; }
+    applyReasoning(body, settings.model, settings.thinking);
 
     var firstContentAt = null;
     function startTimer(){
@@ -596,21 +608,32 @@
       els._timer = setInterval(function(){ els.thinkTime.textContent = fmtDur(Date.now() - started); }, 100);
     }
 
-    return fetch(API_URL, {
-      method: "POST",
-      headers: {
-        "Authorization": "Bearer " + settings.apiKey,
-        "Content-Type": "application/json",
-        "X-Title": APP_TITLE
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    }).then(function(res){
+    var url = apiUrl();
+    var retried = false;
+    function post(){
+      return fetch(url, {
+        method: "POST",
+        headers: {
+          "Authorization": "Bearer " + settings.apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+    }
+
+    function handle(res){
       if(!res.ok){
         return res.text().then(function(t){
           var m = "Request failed (" + res.status + ").";
           try{ var j = JSON.parse(t); m = (j.error && j.error.message) || j.message || m; }
           catch(e){ if(t) m = t.slice(0, 300); }
+          // Some models reject the reasoning parameter; nothing has streamed yet, so retry once without it.
+          if(res.status === 400 && body.reasoning && !retried && /reason|effort|unsupported|not supported/i.test(m + " " + t)){
+            retried = true;
+            delete body.reasoning;
+            return post().then(handle);
+          }
           throw new Error(m);
         });
       }
@@ -665,8 +688,13 @@
         });
       }
       return pump();
-    }).catch(function(e){
+    }
+
+    return post().then(handle).catch(function(e){
       if(e && e.name === "AbortError"){ state.aborted = true; return; }
+      if(e instanceof TypeError && !(controller.signal && controller.signal.aborted)){
+        throw new Error("Request was blocked before it reached OpenRouter (CORS preflight failed). Try turning off a VPN or iCloud Private Relay, or set a proxy endpoint in Settings \u2192 Advanced. (" + (e.message || String(e)) + ")");
+      }
       throw e;
     }).then(function(){
       if(els._timer){ clearInterval(els._timer); els._timer = null; }
@@ -815,9 +843,10 @@
       if(raw){
         var s = JSON.parse(raw);
         settings.apiKey  = s.apiKey  || "";
-        settings.model   = s.model   || "anthropic/claude-opus-4.8";
+        settings.model   = s.model   || "x-ai/grok-4.7";
         settings.thinking= s.thinking|| "max";
         settings.system  = s.system  || "";
+        settings.endpoint= typeof s.endpoint === "string" ? s.endpoint : "";
       }
     }catch(e){}
   }
@@ -832,16 +861,19 @@
     setKey.value = settings.apiKey;
     setModel.value = settings.model;
     setSystem.value = settings.system || "";
+    setEndpoint.value = settings.endpoint || "";
     setThinkSeg(settings.thinking);
     settingsOverlay.classList.add("open");
   }
   function closeSettings(){ settingsOverlay.classList.remove("open"); }
   function saveSettingsForm(){
     settings.apiKey = setKey.value.trim();
-    settings.model = setModel.value.trim() || "anthropic/claude-opus-4.8";
+    settings.model = setModel.value.trim() || "x-ai/grok-4.7";
     settings.system = setSystem.value;
     settings.thinking = pendingThink;
-    saveSettings(); updatePill(); closeSettings(); toast("Settings saved");
+    var ep = setEndpoint.value.trim();
+    if(validEndpoint(ep)){ settings.endpoint = ep; saveSettings(); updatePill(); closeSettings(); toast("Settings saved"); }
+    else { setEndpoint.value = settings.endpoint || ""; saveSettings(); updatePill(); toast("Endpoint must start with https://"); }
   }
 
   function renderPresets(){
@@ -946,8 +978,9 @@
       document.head.appendChild(apple);
       var fav = document.createElement("link"); fav.rel="icon"; fav.href=makeIcon(64);
       document.head.appendChild(fav);
-      var manifest = { name:"Claude Chat", short_name:"Claude", display:"standalone",
-        background_color:"#0e1014", theme_color:"#0e1014", start_url:".",
+      var base = new URL(".", location.href).href;
+      var manifest = { name:"Ownchat", short_name:"Ownchat", display:"standalone",
+        background_color:"#0e1014", theme_color:"#0e1014", start_url:base, scope:base, id:base,
         icons:[ {src:makeIcon(192),sizes:"192x192",type:"image/png"},
                 {src:makeIcon(512),sizes:"512x512",type:"image/png"} ] };
       var mblob = new Blob([JSON.stringify(manifest)], { type:"application/manifest+json" });

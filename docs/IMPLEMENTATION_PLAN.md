@@ -21,6 +21,19 @@ widens the preflight beyond the `authorization, content-type` set that is known 
 Constraints from the owner: the app must stay a browser-only static site on GitHub Pages,
 with key and history in `localStorage`. No required backend.
 
+## Diagnosis result (2026-11-08, after the plan was written)
+
+A real preflight was sent from a US datacenter to `https://openrouter.ai/api/v1/chat/completions` with
+`Origin: https://serhiimartynenko.github.io`, `Access-Control-Request-Headers: authorization,content-type,x-title`
+and an iOS Safari user agent. OpenRouter answered **204** with `access-control-allow-origin: *` and an allow-headers
+list that includes `X-Title`. The response came from Cloudflare with a `__cf_bm` bot-management cookie.
+
+Conclusion: OpenRouter's CORS policy is correct and the app's headers are accepted. The 403 seen in the owner's Safari
+is Cloudflare bot / IP-reputation / region protection on the owner's own network path (VPN, iCloud Private Relay, or a
+geo-blocked region are the usual causes). No header change can fix that from a static page. Layers 2 to 4 of the
+strategy (configurable endpoint, optional personal proxy, clear error message) are therefore the actual fix; layer 1
+is kept only because a smaller preflight is harmless.
+
 ## Strategy (layered)
 
 1. **Minimise the preflight.** Send only `Authorization` and `Content-Type`. Drop `X-Title`.

@@ -34,6 +34,7 @@
     --accent:#e8a04b; --accent-2:#f2b868;
     --think:#8b93ff; --think-2:#b8bdf0;
     --danger:#ff6b6b; --ok:#5ad19a;
+    --ins:#5ad19a; --ins-bg:rgba(90,209,154,.18); --del:#ff6b6b; --del-bg:rgba(255,107,107,.18);
     --user:#222734;
     --r:18px; --r-sm:12px; --maxw:760px;
     --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,Segoe UI,Roboto,sans-serif;
@@ -104,6 +105,61 @@
   .scene-chip[hidden]{display:none}
   .scene-chip.on{border-color:var(--accent);color:var(--accent-2)}
   #scene-chip-text,#sceneChipText{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* ---------- Scene: blocks surface ---------- */
+  #viewScene{position:relative}
+  #viewScene[data-mode="blocks"] #sceneText{display:none}
+  #viewScene[data-mode="write"] #blockList,#viewScene[data-mode="write"] #blockBar{display:none}
+  #sceneSaved[data-state="saved"]{color:var(--ok)}
+  #sceneSaved[data-state="saving"]{color:var(--dim)}
+  #sceneSaved[data-state="edited"]{color:var(--accent)}
+  .hbtn.hbtn-text{width:auto;padding:0 12px;font-size:13px;font-weight:600;color:var(--accent-2)}
+  .block-list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:12px 16px calc(env(safe-area-inset-bottom) + 24px);width:100%;max-width:var(--maxw);margin:0 auto}
+  body.kb-open .block-list{padding-bottom:24px}
+  .block{display:flex;align-items:flex-start;gap:10px;margin:0 0 .6em;padding:0 6px 0 0;border-radius:var(--r-sm)}
+  .block-text{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.6;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;padding:6px 0}
+  .block-handle{flex:none;width:22px;height:22px;margin-top:9px;border-radius:50%;border:1.5px solid var(--border);background:transparent;padding:0}
+  .block.selected{background:color-mix(in srgb, var(--accent) 12%, transparent);outline:1px solid var(--accent);border-radius:var(--r-sm)}
+  .block.selected .block-handle{background:var(--accent);border-color:var(--accent)}
+  .block.selected .block-text{padding-left:8px}
+  .block.editing .block-text{display:none}
+  .block.editing textarea.block-edit{flex:1;min-width:0;width:100%;font:inherit;font-size:16px;line-height:1.6;resize:none;border:0;outline:none;background:transparent;color:var(--text);padding:6px 0;overflow:hidden;display:block;border-radius:0}
+  .block-footer{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+  .block-footer .block-hint{flex:0 0 100%;margin:0}
+  .block-footer button{flex:1 1 140px;padding:12px;border-radius:13px;font-size:14.5px;font-weight:700;min-height:44px}
+  .block-hint{margin:0;font-size:12.5px;line-height:1.5;color:var(--faint)}
+  .block-bar{flex:none;display:flex;flex-wrap:nowrap;align-items:center;gap:8px;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;scrollbar-width:none;padding:8px 12px calc(env(safe-area-inset-bottom) + 8px);background:var(--bg-2);border-top:1px solid var(--border-soft);position:sticky;bottom:0;z-index:2}
+  .block-bar::-webkit-scrollbar{display:none}
+  body.kb-open .block-bar{padding-bottom:8px}
+  .block-bar[hidden]{display:none}
+  .bar-act{flex:none;min-height:40px;padding:0 14px;border-radius:999px;background:var(--surface-2);border:1px solid var(--border);font-size:14px;font-weight:600;color:var(--text);white-space:nowrap}
+  .bar-act:active{background:var(--surface-3)}
+  #blockBarClose{flex:none;width:40px;height:40px;border-radius:50%;font-size:20px;line-height:1;color:var(--dim);margin-left:auto}
+  #blockBarClose:active{background:var(--surface-2);color:var(--text)}
+
+  /* ---------- Diff + preview + versions ---------- */
+  .ins{background:var(--ins-bg);color:var(--ins);border-radius:3px}
+  .del{background:var(--del-bg);color:var(--del);text-decoration:line-through;border-radius:3px}
+  #previewOverlay{z-index:44}
+  #versionsOverlay{z-index:40}
+  #previewMeta{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 10px;min-height:32px}
+  #previewStats{font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+  #previewDiffToggle{flex:none;padding:6px 12px;border-radius:9px;font-size:12.5px;font-weight:600}
+  .preview-body{max-height:50vh;max-height:calc(var(--vvh, 100vh) * .5);overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;white-space:pre-wrap;overflow-wrap:anywhere;font-size:16px;line-height:1.6;background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--r-sm);padding:12px 14px}
+  .warn{color:var(--danger);font-size:13px;line-height:1.45;margin:10px 2px 0}
+  .warn[hidden]{display:none}
+  #previewInstruction{margin-top:12px}
+  .sheet input[type=text]#previewInstruction{flex:none}
+  .sheet-actions button[hidden]{display:none}
+  .sheet-actions #previewReject,.sheet-actions #previewRetry,.sheet-actions #previewStop{flex:1 1 0}
+  .version-list{display:flex;flex-direction:column;gap:6px}
+  .version-row{display:grid;grid-template-columns:1fr auto;column-gap:12px;row-gap:2px;width:100%;min-height:52px;padding:8px 14px;border-radius:12px;text-align:left;background:var(--surface);border:1px solid var(--border);color:var(--text)}
+  .version-row:active{background:var(--surface-2)}
+  .version-when{font-size:15px;font-weight:600}
+  .version-words{grid-column:2;grid-row:1;font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums;align-self:center}
+  .version-reason{grid-column:1 / -1;font-size:12.5px;color:var(--dim)}
+  #versionsEmpty{margin:8px 2px 0;font-size:14px;line-height:1.5}
+  #versionsEmpty[hidden]{display:none}
   #menuOverlay{z-index:46}
   .menu-items{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}
   .menu-item{display:block;width:100%;min-height:48px;padding:0 14px;border-radius:12px;text-align:left;font-size:16px;font-weight:500;color:var(--text)}
@@ -312,10 +368,11 @@
     <button class="hbtn" id="hdrImport" data-views="library" aria-label="Import bundle" title="Import bundle">
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
     </button>
+    <button class="hbtn hbtn-text" id="hdrMode" data-views="scene" type="button" aria-label="Switch editing mode" title="Switch editing mode">Write</button>
     <button class="hbtn" id="hdrChat" data-views="outline scene" aria-label="Project chat" title="Project chat">
       <svg class="ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
     </button>
-    <button class="hbtn" id="hdrMenu" data-views="outline" aria-label="More" title="More">
+    <button class="hbtn" id="hdrMenu" data-views="outline scene" aria-label="More" title="More">
       <svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
     </button>
     <button id="openBible" class="hbtn" data-views="outline scene chat" aria-label="Story bible" title="Story bible">
@@ -345,9 +402,21 @@
       <div class="list" style="padding-top:0"><button id="outlineAddChapter" class="ghost-btn btn-block" type="button">+ Add chapter</button></div>
     </section>
 
-    <section class="view" id="viewScene">
+    <section class="view" id="viewScene" data-mode="blocks">
       <input id="sceneTitle" type="text" placeholder="Scene title" autocomplete="off">
       <textarea id="sceneText" placeholder="Write…"></textarea>
+      <div id="blockList" class="block-list">
+        <div class="block-footer"><p class="block-hint">Tap a paragraph to edit it. Hold or tap its handle to select it for AI actions.</p><button id="blockAdd" class="btn-secondary" type="button">+ Paragraph</button><button id="blockContinue" class="btn-secondary" type="button">Continue writing</button></div>
+      </div>
+      <div id="blockBar" class="block-bar" hidden>
+        <button class="bar-act" type="button" data-act="rewrite">Rewrite</button>
+        <button class="bar-act" type="button" data-act="tighten">Tighten</button>
+        <button class="bar-act" type="button" data-act="expand">Expand</button>
+        <button class="bar-act" type="button" data-act="tone">Tone</button>
+        <button class="bar-act" type="button" data-act="custom">Custom</button>
+        <button class="bar-act" type="button" data-act="continue">Continue</button>
+        <button id="blockBarClose" type="button" aria-label="Clear selection">×</button>
+      </div>
       <div class="scene-bar"><span id="sceneWords">0 words</span><span id="sceneSaved">Saved</span></div>
     </section>
 
@@ -503,6 +572,37 @@
     <div class="sheet-actions">
       <button id="ctxSummarize" class="btn-secondary" type="button">Summarize now</button>
       <button id="ctxClose" class="btn-primary" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Rewrite preview sheet -->
+<div class="overlay" id="previewOverlay">
+  <div class="sheet" role="dialog" aria-label="Preview">
+    <div class="grip"></div>
+    <h2 id="previewTitle">Rewrite</h2>
+    <div id="previewMeta"><span id="previewStats"></span><button id="previewDiffToggle" class="btn-secondary" type="button">Clean</button></div>
+    <div id="previewBody" class="preview-body"></div>
+    <p id="previewWarn" class="warn" hidden></p>
+    <input id="previewInstruction" type="text" placeholder="Extra instruction for Retry (optional)" autocomplete="off">
+    <div class="sheet-actions">
+      <button id="previewReject" class="btn-secondary" type="button">Reject</button>
+      <button id="previewRetry" class="btn-secondary" type="button">Retry</button>
+      <button id="previewStop" class="btn-secondary" type="button" hidden>Stop</button>
+      <button id="previewAccept" class="btn-primary" type="button">Accept</button>
+    </div>
+  </div>
+</div>
+
+<!-- Versions sheet -->
+<div class="overlay" id="versionsOverlay">
+  <div class="sheet" role="dialog" aria-label="Versions">
+    <div class="grip"></div>
+    <h2>Versions</h2>
+    <div id="versionList" class="version-list"></div>
+    <p id="versionsEmpty" class="muted" hidden>No versions yet. Accepting an AI change or choosing Save version adds one.</p>
+    <div class="sheet-actions">
+      <button id="versionsClose" class="btn-secondary" type="button">Close</button>
     </div>
   </div>
 </div>

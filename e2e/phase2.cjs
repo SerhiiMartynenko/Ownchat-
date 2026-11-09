@@ -176,6 +176,9 @@ async function run(browser) {
 
   // 5. chat with scene context
   await page.click('#hdrChat'); await waitView('chat');
+  await page.click('#chatScopeProject');
+  await page.waitForFunction(() => /^#\/p\/[^/]+\/chat$/.test(location.hash), null, { timeout: 4000 }).catch(() => {});
+  await page.waitForSelector('#sceneChip', { state: 'visible', timeout: 4000 }).catch(() => {});
   check('5. chat title "Novel A"', (await page.textContent('#hdrTitle')) === 'Novel A');
   check('5. scene chip on', (await page.isVisible('#sceneChip')) && /Scene: Opening · On/.test(await page.textContent('#sceneChip')) && await page.locator('#sceneChip.on').count() === 1, await page.textContent('#sceneChip'));
   check('5. meter mentions scene', /· scene/.test(await page.textContent('#ctxMeterText')), await page.textContent('#ctxMeterText'));
@@ -188,8 +191,8 @@ async function run(browser) {
   r = await sendAndWait('And then?');
   check('5. request without scene after toggle off', !sysText(r.body).includes('## Current scene'), sysText(r.body).slice(0, 200));
   await page.click('#ctxMeter'); await page.waitForSelector('#ctxOverlay.open');
-  check('5. ctx sheet 6 rows', (await page.locator('#ctxLayers li.layer-row').count()) === 6);
-  const sceneRow = await page.locator('#ctxLayers li.layer-row').nth(2).innerText();
+  check('5. ctx sheet 7 rows', (await page.locator('#ctxLayers li.layer-row').count()) === 7);
+  const sceneRow = await page.locator('#ctxLayers li.layer-row').nth(3).innerText();
   check('5. scene row says off', /Current scene/.test(sceneRow) && /off/.test(sceneRow), sceneRow);
   await page.click('#ctxClose');
   await page.click('#sceneChip');   // back on

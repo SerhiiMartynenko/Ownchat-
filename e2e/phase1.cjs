@@ -170,7 +170,7 @@ async function run(browser) {
   await page.click('#ctxMeter');
   await page.waitForSelector('#ctxOverlay.open');
   const lr = await page.locator('#ctxLayers li.layer-row').count();
-  check('e. 6 layer rows', lr === 6, lr);
+  check('e. 7 layer rows', lr === 7, lr);
   const usage = await page.textContent('#ctxUsage');
   check('e. usage shows 1,234', usage.includes('1,234'), usage);
   await page.screenshot({ path: SHOTS + 'phase1-ctx.png' });

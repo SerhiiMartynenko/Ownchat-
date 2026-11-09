@@ -1,17 +1,19 @@
 // Project store over a db handle (see db.js). Pure: no DOM, testable with memoryHandle().
 // Every multi-record change goes through handle.batch so it lands in one transaction.
-import { uid as defaultUid } from "./util.js";
+import { uid as defaultUid, hashText } from "./util.js";
 import { normalizeBible, emptyBible } from "./bible.js";
 import { blocksToText, countWords } from "./scene.js";
 
 // Per-scene cap on stored versions; older ones are pruned in the same batch that adds a new one.
 export const MAX_VERSIONS_PER_SCENE = 30;
 
+export function sceneThreadId(sceneId){ return "ts-" + sceneId; }
+
 export function emptyThread(id, projectId){
   return { id: id || "default", projectId: projectId == null ? null : projectId,
     messages: [], summary: "", summarizedUpTo: 0, summarizedUpToId: null,
     summaryModel: "", summaryUpdatedAt: 0, lastUsage: null, updatedAt: 0,
-    scope: "project", includeScene: true };
+    scope: "project", sceneId: null, includeScene: true };
 }
 
 function resetSummary(t){
@@ -29,6 +31,8 @@ export function normalizeThread(rec){
     if(!m || m.id !== t.summarizedUpToId) resetSummary(t);
   }
   if(typeof t.scope !== "string" || !t.scope) t.scope = "project";
+  t.sceneId = typeof t.sceneId === "string" && t.sceneId ? t.sceneId : null;
+  if(t.scope === "scene" && !t.sceneId) t.scope = "project";
   t.includeScene = t.includeScene !== false;
   return t;
 }
@@ -50,6 +54,8 @@ function normalizeScene(raw){
   s.blocks = normalizeBlocks(s.blocks);
   s.summary = str(s.summary);
   s.summaryHash = str(s.summaryHash);
+  s.summaryUpdatedAt = Math.max(0, Number(s.summaryUpdatedAt) || 0);
+  s.summaryModel = str(s.summaryModel);
   s.wordCount = Math.max(0, Number(s.wordCount) || 0);
   return s;
 }
@@ -178,6 +184,7 @@ export function createStore(handle, deps){
     for(var i = 0; i < scenes.length; i++){
       var versions = await db.getAllBy("versions", "sceneId", scenes[i].id);
       versions.forEach(function(v){ ops.push(del("versions", v.id)); });
+      ops.push(del("threads", sceneThreadId(scenes[i].id)));
       ops.push(del("scenes", scenes[i].id));
     }
     return ops;
@@ -190,7 +197,10 @@ export function createStore(handle, deps){
     ops = ops.concat(await sceneDeleteOps(scenes));
     chapters.forEach(function(c){ ops.push(del("chapters", c.id)); });
     if(p.bibleId) ops.push(del("bible", p.bibleId));
-    if(p.threadId) ops.push(del("threads", p.threadId));
+    var threadIds = (await db.getAllBy("threads", "projectId", p.id)).map(function(t){ return t.id; });
+    if(p.threadId) threadIds.push(p.threadId);
+    threadIds.filter(function(id, i){ return threadIds.indexOf(id) === i; })
+      .forEach(function(id){ ops.push(del("threads", id)); });
     ops.push(del("projects", p.id));
     return ops;
   }
@@ -295,7 +305,7 @@ export function createStore(handle, deps){
     var siblings = await scenesOf(chapterId);
     var sc = { id: uid(), projectId: ch.projectId, chapterId: chapterId, order: siblings.length,
       title: str(title).trim() || "Scene " + (siblings.length + 1), blocks: [], summary: "", summaryHash: "",
-      wordCount: 0, createdAt: t, updatedAt: t };
+      summaryUpdatedAt: 0, summaryModel: "", wordCount: 0, createdAt: t, updatedAt: t };
     await db.batch([put("scenes", sc)].concat(await touchOps(ch.projectId, t)));
     return sc;
   }
@@ -372,6 +382,48 @@ export function createStore(handle, deps){
       createdAt: cur.createdAt, updatedAt: t }));
     await db.batch([put("scenes", next)].concat(await touchOps(cur.projectId, t)));
     return next;
+  }
+
+  // Summary fields only, in one transaction; never touches blocks or the project record.
+  var SUMMARY_FIELDS = ["summary", "summaryHash", "summaryUpdatedAt", "summaryModel"];
+  async function patchScene(id, fields){
+    var f = fields || {};
+    var t = now();
+    var rec = await db.patch("scenes", id, function(cur){
+      var next = Object.assign({}, cur);
+      SUMMARY_FIELDS.forEach(function(k){ if(k in f) next[k] = f[k]; });
+      next.updatedAt = t;
+      return normalizeScene(next);
+    });
+    return rec ? normalizeScene(rec) : null;
+  }
+
+  function getChapter(id){ return db.get("chapters", id); }
+
+  // Scenes in outline order; scenes whose chapter is missing go last.
+  async function orderedScenes(pid){
+    var chapters = await chaptersOf(pid);
+    var pos = {};
+    chapters.forEach(function(c, i){ pos[c.id] = i; });
+    var scenes = (await db.getAllBy("scenes", "projectId", pid)).map(normalizeScene).sort(function(a, b){
+      var pa = a.chapterId in pos ? pos[a.chapterId] : chapters.length;
+      var pb = b.chapterId in pos ? pos[b.chapterId] : chapters.length;
+      return (pa - pb) || byOrder(a, b);
+    });
+    return { chapters: chapters, scenes: scenes };
+  }
+
+  async function listSceneSummaries(pid){
+    if(!(await db.get("projects", pid))) return [];
+    var o = await orderedScenes(pid);
+    var titles = {};
+    o.chapters.forEach(function(c){ titles[c.id] = str(c.title); });
+    return o.scenes.map(function(s){
+      return { id: s.id, chapterId: s.chapterId, chapterTitle: titles[s.chapterId] || "", order: s.order,
+        title: s.title, summary: s.summary, summaryHash: s.summaryHash, summaryUpdatedAt: s.summaryUpdatedAt,
+        summaryModel: s.summaryModel, wordCount: s.wordCount,
+        stale: s.summary ? hashText(blocksToText(s.blocks)) !== s.summaryHash : false };
+    });
   }
 
   async function listVersions(sceneId){
@@ -466,6 +518,19 @@ export function createStore(handle, deps){
     return t;
   }
 
+  // Absent record means an empty thread; ids and scope always follow the scene.
+  async function getSceneThread(scene){
+    if(!scene || !scene.id) return null;
+    var id = sceneThreadId(scene.id);
+    var raw = await db.get("threads", id);
+    var t = raw == null ? emptyThread(id, scene.projectId) : normalizeThread(raw);
+    t.id = id;
+    t.projectId = scene.projectId;
+    t.scope = "scene";
+    t.sceneId = scene.id;
+    return t;
+  }
+
   async function setLastScene(pid, sid){
     var p = await db.get("projects", pid);
     if(!p) return null;
@@ -474,18 +539,19 @@ export function createStore(handle, deps){
     return p;
   }
 
-  // Everything a bundle needs: { project, bible, thread, chapters, scenes } sorted by outline order.
+  // Everything a bundle needs: { project, bible, thread, chapters, scenes, sceneThreads } sorted by
+  // outline order. sceneThreads holds only stored threads of scenes that still exist.
   async function loadProjectData(pid){
     var project = await db.get("projects", pid);
     if(!project) return null;
-    var chapters = await chaptersOf(pid);
-    var pos = {};
-    chapters.forEach(function(c, i){ pos[c.id] = i; });
-    var scenes = (await db.getAllBy("scenes", "projectId", pid)).map(normalizeScene).sort(function(a, b){
-      return ((pos[a.chapterId] || 0) - (pos[b.chapterId] || 0)) || byOrder(a, b);
-    });
+    var o = await orderedScenes(pid);
+    var idx = {};
+    o.scenes.forEach(function(s, i){ idx[s.id] = i; });
+    var sceneThreads = (await db.getAllBy("threads", "projectId", pid)).map(normalizeThread)
+      .filter(function(t){ return t.scope === "scene" && t.sceneId in idx; })
+      .sort(function(a, b){ return idx[a.sceneId] - idx[b.sceneId]; });
     return { project: project, bible: await getBible(project), thread: await getThread(project),
-      chapters: chapters, scenes: scenes };
+      chapters: o.chapters, scenes: o.scenes, sceneThreads: sceneThreads };
   }
 
   // mode "copy" (default): new ids for project/chapters/scenes/bible/thread; suffix " (imported)"
@@ -546,6 +612,16 @@ export function createStore(handle, deps){
     ops.push(put("projects", project), put("bible", bible), put("threads", thread));
     chapters.forEach(function(c){ ops.push(put("chapters", c)); });
     scenes.forEach(function(s){ ops.push(put("scenes", s)); });
+    // Scene threads follow their scene's (possibly new) id; unmapped ones are dropped.
+    var threadSeen = {};
+    arr(data.sceneThreads).forEach(function(st){
+      if(!st || typeof st !== "object" || st.sceneId == null) return;
+      var sid = sceneIds[str(st.sceneId)];
+      if(!sid || threadSeen[sid]) return;
+      threadSeen[sid] = true;
+      ops.push(put("threads", normalizeThread(Object.assign({}, st, { id: sceneThreadId(sid), projectId: pid,
+        scope: "scene", sceneId: sid }))));
+    });
     await db.batch(ops);
     return pid;
   }
@@ -557,7 +633,8 @@ export function createStore(handle, deps){
     getOutline: getOutline, addChapter: addChapter, renameChapter: renameChapter,
     deleteChapter: deleteChapter, moveChapter: moveChapter,
     addScene: addScene, renameScene: renameScene, deleteScene: deleteScene, moveScene: moveScene,
-    getScene: getScene, saveScene: saveScene,
+    getScene: getScene, saveScene: saveScene, patchScene: patchScene, getChapter: getChapter,
+    listSceneSummaries: listSceneSummaries, getSceneThread: getSceneThread,
     listVersions: listVersions, getVersion: getVersion, addVersion: addVersion,
     saveSceneWithVersion: saveSceneWithVersion, restoreVersion: restoreVersion,
     getBible: getBible, saveBible: saveBible, getThread: getThread, saveThread: saveThread,

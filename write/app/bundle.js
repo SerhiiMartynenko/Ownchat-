@@ -96,7 +96,7 @@ function resolveNow(now){
   return Date.now();
 }
 
-// data: {project, chapters, scenes, bible, thread}; opts: {now}
+// data: {project, chapters, scenes, bible, thread, sceneThreads?}; opts: {now}
 export function buildBundle(data, opts){
   var d=data||{};
   var project=Object.assign({}, d.project||{});
@@ -117,11 +117,14 @@ export function buildBundle(data, opts){
     var type=str(card.type) || "note";
     var slug=uniqueSlug(type+"-"+slugify(card.name, type), bibleUsed);
     var file="bible/"+slug+".md";
+    // source only when set, so cards without one keep their exact file content
+    var hasSource=card.source!=null;
     files[file]=formatFrontMatter({
       id:str(card.id), type:type, name:str(card.name),
       aliases:Array.isArray(card.aliases) ? card.aliases : [],
-      pinned:!!card.pinned, status:str(card.status) || "approved"
-    }, CARD_KEYS, card.body);
+      pinned:!!card.pinned, status:str(card.status) || "approved",
+      source:hasSource ? card.source : null
+    }, hasSource ? CARD_KEYS.concat(["source"]) : CARD_KEYS, card.body);
     return { id:str(card.id), createdAt:card.createdAt, updatedAt:card.updatedAt, file:file };
   });
   var bibleMeta=Object.assign(omit(bible, ["brief","styleGuide","cards","v","updatedAt"]), {
@@ -160,13 +163,25 @@ export function buildBundle(data, opts){
 
   files[THREAD_PATH]=JSON.stringify(thread, null, 2)+"\n";
 
+  // Scene chats: one file per thread, named after the scene id
+  var threadUsed=new Set();
+  var sceneThreadEntries=[];
+  (Array.isArray(d.sceneThreads) ? d.sceneThreads : []).forEach(function(t){
+    if(!isObj(t) || t.sceneId==null || str(t.sceneId)==="") return;
+    var sid=str(t.sceneId);
+    var file="chat/scene-"+uniqueSlug(slugify(sid, "scene"), threadUsed)+".json";
+    files[file]=JSON.stringify(t, null, 2)+"\n";
+    sceneThreadEntries.push({ sceneId:sid, file:file });
+  });
+
   var manifest={
     format:BUNDLE_FORMAT, version:BUNDLE_VERSION, exportedAt:exportedAt,
     project:project,
     chapters:chapters.map(function(c){ return Object.assign({}, c); }),
     scenes:sceneMetas,
     bible:bibleMeta,
-    thread:THREAD_PATH
+    thread:THREAD_PATH,
+    sceneThreads:sceneThreadEntries
   };
   files["manifest.json"]=JSON.stringify(manifest, null, 2)+"\n";
   return { files:files, manifest:manifest };
@@ -295,6 +310,7 @@ export function parseBundle(input, opts){
     cards.push({
       id:str(entry.id || meta.id), type:meta.type, name:meta.name, aliases:meta.aliases,
       pinned:meta.pinned===true || meta.pinned==="true", status:meta.status,
+      source:isObj(meta.source) ? meta.source : null,
       body:fm.body, createdAt:entry.createdAt, updatedAt:entry.updatedAt
     });
   });
@@ -306,6 +322,12 @@ export function parseBundle(input, opts){
     cards:cards
   }));
   if(normalized.cards.length<cards.length) warnings.push("Skipped "+(cards.length-normalized.cards.length)+" card(s) without a name");
+  // Keep card sources even if the bible normaliser does not know the field
+  normalized.cards.forEach(function(c){
+    if("source" in c) return;
+    var rawCard=cards.find(function(r){ return r.id===c.id; });
+    if(rawCard && rawCard.source) c.source=rawCard.source;
+  });
   var bible=Object.assign({}, extra, normalized);
 
   // Thread
@@ -321,7 +343,24 @@ export function parseBundle(input, opts){
   }
   if(!thread) thread=emptyThreadFor(project);
 
-  return { project:project, chapters:chapters, scenes:scenes, bible:bible, thread:thread, warnings:warnings };
+  // Scene chats; ids are re-derived from sceneId by the store on import
+  var sceneThreads=[];
+  (Array.isArray(manifest.sceneThreads) ? manifest.sceneThreads : []).forEach(function(entry){
+    if(!isObj(entry) || entry.sceneId==null) return;
+    var sid=str(entry.sceneId);
+    var text=readFile(entry.file, "the scene chat for "+sid);
+    if(text==null) return;
+    var st=null;
+    try { st=JSON.parse(text); } catch(e){ st=null; }
+    if(!isObj(st) || !Array.isArray(st.messages)){
+      warnings.push("Scene chat for "+sid+" is not valid; skipped");
+      return;
+    }
+    sceneThreads.push(Object.assign({}, st, { sceneId:sid }));
+  });
+
+  return { project:project, chapters:chapters, scenes:scenes, bible:bible, thread:thread,
+    sceneThreads:sceneThreads, warnings:warnings };
 }
 
 /* ===== Manuscript ===== */

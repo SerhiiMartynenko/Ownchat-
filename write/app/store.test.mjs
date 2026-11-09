@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { memoryHandle } from "./db.js";
-import { createStore, emptyThread, normalizeThread, MAX_VERSIONS_PER_SCENE } from "./store.js";
+import { createStore, emptyThread, normalizeThread, sceneThreadId, MAX_VERSIONS_PER_SCENE } from "./store.js";
+import { hashText } from "./util.js";
+import { blocksToText } from "./scene.js";
 
 function setup(){
   const h = memoryHandle();
@@ -514,4 +516,199 @@ test("saveScene writes no version; scene deletes cascade to versions", async () 
   await store.deleteProject(p.id);
   assert.equal((await h.getAll("versions")).length, 0);
   void c2;
+});
+
+// ---- scene summaries and scene threads ----
+
+test("memory handle patch: applies fn in place, null for missing, isolated clones", async () => {
+  const h = memoryHandle();
+  await h.put("scenes", { id: "s1", n: 1, deep: { x: 1 } });
+  const seen = [];
+  const out = await h.patch("scenes", "s1", (rec) => { seen.push(rec); rec.n = 2; return rec; });
+  assert.deepEqual(out, { id: "s1", n: 2, deep: { x: 1 } });
+  assert.deepEqual(await h.get("scenes", "s1"), out);
+  out.deep.x = 99;
+  seen[0].deep.x = 77;
+  assert.equal((await h.get("scenes", "s1")).deep.x, 1);
+  let called = false;
+  assert.equal(await h.patch("scenes", "nope", () => { called = true; return {}; }), null);
+  assert.equal(called, false);
+  assert.equal(await h.get("scenes", "nope"), undefined);
+  await assert.rejects(h.patch("scenes", "s1", () => { throw new Error("boom"); }));
+  assert.equal((await h.get("scenes", "s1")).n, 2);
+});
+
+test("normalizeThread sceneId rules", () => {
+  assert.equal(emptyThread("x", "p").sceneId, null);
+  assert.deepEqual([normalizeThread({}).scope, normalizeThread({}).sceneId], ["project", null]);
+  const a = normalizeThread({ scope: "scene", sceneId: "s1" });
+  assert.deepEqual([a.scope, a.sceneId], ["scene", "s1"]);
+  const b = normalizeThread({ scope: "scene", sceneId: "" });
+  assert.deepEqual([b.scope, b.sceneId], ["project", null]);
+  const c = normalizeThread({ scope: "scene", sceneId: 5 });
+  assert.deepEqual([c.scope, c.sceneId], ["project", null]);
+  assert.equal(normalizeThread({ messages: [] }).scope, "project");
+  assert.equal(sceneThreadId("abc"), "ts-abc");
+});
+
+test("getSceneThread: empty default and stored record with forced fields", async () => {
+  const { h, store } = setup();
+  const { p, a } = await book(store);
+  const empty = await store.getSceneThread(a);
+  assert.equal(empty.id, "ts-" + a.id);
+  assert.equal(empty.scope, "scene");
+  assert.equal(empty.sceneId, a.id);
+  assert.equal(empty.projectId, p.id);
+  assert.deepEqual(empty.messages, []);
+  assert.equal(await h.get("threads", "ts-" + a.id), undefined);
+  await h.put("threads", { id: "ts-" + a.id, projectId: "other", scope: "project", sceneId: "zzz",
+    messages: [{ id: "m1", role: "user", content: "hi" }], includeScene: false });
+  const t = await store.getSceneThread(a);
+  assert.deepEqual([t.id, t.scope, t.sceneId, t.projectId], ["ts-" + a.id, "scene", a.id, p.id]);
+  assert.equal(t.messages[0].id, "m1");
+  assert.equal(t.includeScene, false);
+});
+
+test("addScene and getScene carry summary fields", async () => {
+  const { h, store } = setup();
+  const { a } = await book(store);
+  assert.equal(a.summaryUpdatedAt, 0);
+  assert.equal(a.summaryModel, "");
+  await h.put("scenes", { ...(await h.get("scenes", a.id)), summaryUpdatedAt: -3, summaryModel: null });
+  const got = await store.getScene(a.id);
+  assert.equal(got.summaryUpdatedAt, 0);
+  assert.equal(got.summaryModel, "");
+});
+
+test("patchScene writes only summary fields and leaves the project alone", async () => {
+  const { store } = setup();
+  const { p, a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: [{ id: "x", text: "Text" }], wordCount: 1 });
+  const before = await store.getScene(a.id);
+  const projectAt = (await store.getProject(p.id)).updatedAt;
+  const out = await store.patchScene(a.id, { summary: "Sum", summaryHash: "h", summaryUpdatedAt: 50,
+    summaryModel: "user", blocks: [], title: "Hacked", wordCount: 99, chapterId: "c?" });
+  assert.equal(out.summary, "Sum");
+  assert.equal(out.summaryHash, "h");
+  assert.equal(out.summaryUpdatedAt, 50);
+  assert.equal(out.summaryModel, "user");
+  assert.deepEqual(out.blocks, before.blocks);
+  assert.equal(out.title, "A");
+  assert.equal(out.wordCount, 1);
+  assert.equal(out.chapterId, before.chapterId);
+  assert.ok(out.updatedAt > before.updatedAt);
+  assert.deepEqual(await store.getScene(a.id), out);
+  assert.equal((await store.getProject(p.id)).updatedAt, projectAt);
+  const partial = await store.patchScene(a.id, { summaryModel: "m" });
+  assert.equal(partial.summary, "Sum");
+  assert.equal(partial.summaryModel, "m");
+  assert.equal(await store.patchScene("gone", { summary: "x" }), null);
+});
+
+test("saveScene and saveSceneWithVersion keep summary fields the caller omits", async () => {
+  const { store } = setup();
+  const { a } = await book(store);
+  const fields = { summary: "Sum", summaryHash: "h1", summaryUpdatedAt: 77, summaryModel: "util" };
+  await store.patchScene(a.id, fields);
+  const s1 = await store.saveScene({ id: a.id, title: "A2", blocks: [{ id: "x", text: "One" }], wordCount: 1 });
+  const pick = (s) => ({ summary: s.summary, summaryHash: s.summaryHash, summaryUpdatedAt: s.summaryUpdatedAt, summaryModel: s.summaryModel });
+  assert.deepEqual(pick(s1), fields);
+  assert.deepEqual(pick(await store.getScene(a.id)), fields);
+  const res = await store.saveSceneWithVersion({ id: a.id, blocks: [{ id: "x", text: "Two" }] }, { reason: "rewrite" });
+  assert.deepEqual(pick(res.scene), fields);
+  assert.deepEqual(pick(await store.getScene(a.id)), fields);
+});
+
+test("listSceneSummaries: outline order, stale flag, no blocks, orphans last", async () => {
+  const { h, store } = setup();
+  const { p, c1, c2, a, b, c } = await book(store);
+  const blocks = [{ id: "x", text: "Hello there" }];
+  await store.saveScene({ id: a.id, blocks, wordCount: 2 });
+  await store.saveScene({ id: b.id, blocks, wordCount: 2 });
+  await store.patchScene(a.id, { summary: "fresh", summaryHash: hashText(blocksToText(blocks)), summaryModel: "m" });
+  await store.patchScene(b.id, { summary: "old", summaryHash: "deadbeef" });
+  await store.moveChapter(c2.id, -1);
+  await h.put("scenes", { id: "orph", projectId: p.id, chapterId: "missing", order: 0, title: "Lost", blocks: [] });
+  const list = await store.listSceneSummaries(p.id);
+  assert.deepEqual(list.map((s) => s.id), [c.id, a.id, b.id, "orph"]);
+  assert.deepEqual(list.map((s) => s.chapterTitle), ["Two", "One", "One", ""]);
+  assert.deepEqual(list.map((s) => s.stale), [false, false, true, false]);
+  assert.ok(list.every((s) => !("blocks" in s)));
+  assert.deepEqual(Object.keys(list[1]).sort(), ["chapterId", "chapterTitle", "id", "order", "stale", "summary",
+    "summaryHash", "summaryModel", "summaryUpdatedAt", "title", "wordCount"]);
+  assert.equal(list[1].chapterId, c1.id);
+  assert.equal(list[1].summary, "fresh");
+  assert.equal(list[1].wordCount, 2);
+  assert.deepEqual(await store.listSceneSummaries("nope"), []);
+});
+
+test("getChapter", async () => {
+  const { store } = setup();
+  const { c1 } = await book(store);
+  assert.equal((await store.getChapter(c1.id)).title, "One");
+  assert.equal(await store.getChapter("nope"), undefined);
+});
+
+test("scene and project deletes remove scene threads", async () => {
+  const { h, store } = setup();
+  const { p, a, b, c2, c } = await book(store);
+  const keep = await book(store);
+  for(const s of [a, b, c, keep.a]){
+    await store.saveThread(s.projectId, { ...(await store.getSceneThread(s)), messages: [{ id: "m", role: "user", content: "x" }] });
+  }
+  await h.put("threads", { id: "stray", projectId: p.id, messages: [] });
+  assert.equal(await store.deleteScene(a.id), true);
+  assert.equal(await h.get("threads", "ts-" + a.id), undefined);
+  assert.ok(await h.get("threads", "ts-" + b.id));
+  await store.deleteChapter(c2.id);
+  assert.equal(await h.get("threads", "ts-" + c.id), undefined);
+  assert.equal(await store.deleteProject(p.id), true);
+  assert.equal((await h.getAllBy("threads", "projectId", p.id)).length, 0);
+  assert.equal(await h.get("threads", p.threadId), undefined);
+  assert.ok(await h.get("threads", "ts-" + keep.a.id));
+  assert.ok(await h.get("threads", keep.p.threadId));
+});
+
+test("loadProjectData.sceneThreads: outline order, no orphans", async () => {
+  const { h, store } = setup();
+  const { p, a, b, c, c2 } = await book(store);
+  for(const s of [c, b, a]) await store.saveThread(p.id, await store.getSceneThread(s));
+  await h.put("threads", { id: "ts-ghost", projectId: p.id, scope: "scene", sceneId: "ghost", messages: [] });
+  await store.moveChapter(c2.id, -1);
+  const data = await store.loadProjectData(p.id);
+  assert.deepEqual(data.sceneThreads.map((t) => t.sceneId), [c.id, a.id, b.id]);
+  assert.ok(data.sceneThreads.every((t) => t.scope === "scene" && t.id === "ts-" + t.sceneId));
+  assert.equal(data.thread.id, p.threadId);
+});
+
+test("importProject: scene threads remapped in copy, kept in replace, optional", async () => {
+  const { h, store } = setup();
+  const { p, a, b } = await book(store);
+  await store.saveThread(p.id, { ...(await store.getSceneThread(a)), messages: [{ id: "ma", role: "user", content: "A" }] });
+  await store.saveThread(p.id, { ...(await store.getSceneThread(b)), messages: [{ id: "mb", role: "user", content: "B" }] });
+  const data = await store.loadProjectData(p.id);
+  data.sceneThreads.push({ id: "ts-zzz", sceneId: "zzz", scope: "scene", messages: [] });
+
+  const nid = await store.importProject(data, { mode: "copy" });
+  const o = await store.getOutline(nid);
+  const [na, nb] = o.chapters[0].scenes;
+  const ta = await h.get("threads", "ts-" + na.id);
+  assert.deepEqual([ta.projectId, ta.scope, ta.sceneId, ta.messages[0].id], [nid, "scene", na.id, "ma"]);
+  assert.equal((await h.get("threads", "ts-" + nb.id)).messages[0].id, "mb");
+  const nThreads = await h.getAllBy("threads", "projectId", nid);
+  assert.equal(nThreads.length, 3); // project thread + two scene threads, unmapped one dropped
+  assert.ok(await h.get("threads", "ts-" + a.id)); // original untouched
+
+  data.sceneThreads = data.sceneThreads.filter((t) => t.sceneId === a.id);
+  data.sceneThreads[0].messages.push({ id: "ma2", role: "user", content: "A2" });
+  assert.equal(await store.importProject(data, { mode: "replace" }), p.id);
+  const ra = await h.get("threads", "ts-" + a.id);
+  assert.deepEqual(ra.messages.map((m) => m.id), ["ma", "ma2"]);
+  assert.equal(ra.projectId, p.id);
+  assert.equal(await h.get("threads", "ts-" + b.id), undefined);
+
+  delete data.sceneThreads;
+  const plain = await store.importProject(data, { mode: "copy" });
+  assert.equal((await store.getOutline(plain)).chapters.length, 2);
+  assert.equal((await h.getAllBy("threads", "projectId", plain)).length, 1);
 });

@@ -1,6 +1,7 @@
 // IndexedDB storage for the writing app.
 // Falls back to an in-memory map when IndexedDB is missing or fails to open.
-// The handle API is the same for both: get, put, del, getAll, getAllBy, batch.
+// The handle API is the same for both: get, put, del, getAll, getAllBy, patch, batch.
+// patch(store, id, fn): read-modify-write in one transaction; null (no write) when id is missing.
 
 var DB_NAME = "ownchat-write";
 var DB_VERSION = 2;
@@ -42,6 +43,13 @@ export function memoryHandle(){
       return Promise.resolve(Array.from(map(store).values())
         .filter(function(rec){ return rec && rec[index] === value; }).map(clone));
     },
+    patch: function(store, id, fn){
+      var cur = map(store).get(id);
+      if(cur === undefined) return Promise.resolve(null);
+      var next;
+      try{ next = clone(fn(clone(cur))); map(store).set(next.id, next); }catch(e){ return Promise.reject(e); }
+      return Promise.resolve(clone(next));
+    },
     batch: function(ops){
       try{ (ops || []).forEach(apply); }catch(e){ return Promise.reject(e); }
       return Promise.resolve();
@@ -75,6 +83,22 @@ function idbHandle(db){
     getAll: function(store){ return run(store, "readonly", function(s){ return s.getAll(); }); },
     getAllBy: function(store, index, value){
       return run(store, "readonly", function(s){ return s.index(index).getAll(value); });
+    },
+    patch: function(store, id, fn){
+      return new Promise(function(resolve, reject){
+        var tx, out = null;
+        try{ tx = db.transaction(store, "readwrite"); }catch(e){ reject(e); return; }
+        var s = tx.objectStore(store);
+        var r = s.get(id);
+        r.onsuccess = function(){
+          if(r.result === undefined) return;
+          try{ out = fn(r.result); s.put(out); }
+          catch(e){ out = null; try{ tx.abort(); }catch(e2){} reject(e); }
+        };
+        tx.oncomplete = function(){ resolve(out); };
+        tx.onerror = function(){ reject(tx.error); };
+        tx.onabort = function(){ reject(tx.error || new Error("Transaction aborted")); };
+      });
     },
     batch: function(ops){
       ops = ops || [];

@@ -227,3 +227,66 @@ test("buildManuscript", () => {
     "## Untitled chapter\n\nUntitled scene text.\n");
   assert.equal(buildManuscript({ title: "" }, [], []), "# Untitled\n");
 });
+
+// ---- scene threads and card sources ----
+
+function sceneThread(sceneId, n){
+  return { id: "ts-" + sceneId, projectId: "p1", scope: "scene", sceneId, includeScene: true,
+    messages: Array.from({ length: n }, (_, i) => ({ id: sceneId + "-m" + i, role: "user", content: "Q" + i })),
+    summary: "", summarizedUpTo: 0, summarizedUpToId: null, summaryModel: "", summaryUpdatedAt: 0,
+    lastUsage: null, updatedAt: 3 };
+}
+
+test("scene threads and card sources round trip", () => {
+  const data = fixture();
+  data.sceneThreads = [sceneThread("s4", 2), sceneThread("s1", 1)];
+  const source = { kind: "chat", threadId: "ts-s1", messageId: "s1-m0" };
+  data.bible.cards[1].source = source;
+  const { files, manifest } = buildBundle(data, { now: NOW });
+  assert.deepEqual(manifest.sceneThreads, [
+    { sceneId: "s4", file: "chat/scene-s4.json" },
+    { sceneId: "s1", file: "chat/scene-s1.json" }
+  ]);
+  manifest.sceneThreads.forEach((e) => assert.ok(files[e.file].endsWith("\n")));
+  assert.deepEqual(JSON.parse(files["manifest.json"]).sceneThreads, manifest.sceneThreads);
+  assert.ok(files["bible/character-liz-2.md"].includes('\nsource: {"kind":"chat","threadId":"ts-s1","messageId":"s1-m0"}\n'));
+  const back = parseBundle(files, { uid: counter() });
+  assert.deepEqual(back.warnings, []);
+  assert.deepEqual(back.sceneThreads, data.sceneThreads);
+  const k2 = back.bible.cards.find((c) => c.id === "k2");
+  assert.equal(k2.source.kind, "chat");
+  assert.equal(k2.source.messageId, "s1-m0");
+  assert.ok(!back.bible.cards.find((c) => c.id === "k1").source);
+});
+
+test("cards without source keep their exact file; sceneThreads defaults", () => {
+  const data = fixture();
+  data.bible.cards[0].source = null;
+  const { files, manifest } = buildBundle(data, { now: NOW });
+  assert.equal(files["bible/character-liz.md"],
+    '---\nid: "k1"\ntype: "character"\nname: "Liz"\naliases: ["Lizzie"]\npinned: true\nstatus: "approved"\n---\n\nTall.\n---\nNot a front matter.\n');
+  assert.deepEqual(manifest.sceneThreads, []);
+  assert.ok(!Object.keys(files).some((p) => p.startsWith("chat/scene-")));
+  const m = JSON.parse(files["manifest.json"]);
+  delete m.sceneThreads;
+  files["manifest.json"] = JSON.stringify(m);
+  const back = parseBundle(files);
+  assert.deepEqual(back.sceneThreads, []);
+  assert.deepEqual(back.warnings, []);
+});
+
+test("invalid scene thread files are skipped with a warning", () => {
+  const data = fixture();
+  data.sceneThreads = [sceneThread("s1", 1), sceneThread("s2", 1), sceneThread("s3", 1), sceneThread("Same", 0), sceneThread("same", 0)];
+  const { files, manifest } = buildBundle(data, { now: NOW });
+  assert.deepEqual(manifest.sceneThreads.slice(3).map((e) => e.file), ["chat/scene-same.json", "chat/scene-same-2.json"]);
+  files["chat/scene-s1.json"] = "{broken";
+  files["chat/scene-s2.json"] = JSON.stringify({ messages: "nope" });
+  delete files["chat/scene-s3.json"];
+  const back = parseBundle(files);
+  assert.deepEqual(back.sceneThreads.map((t) => t.sceneId), ["Same", "same"]);
+  assert.equal(back.warnings.length, 3);
+  assert.equal(back.warnings[0], "Scene chat for s1 is not valid; skipped");
+  assert.equal(back.warnings[1], "Scene chat for s2 is not valid; skipped");
+  assert.ok(back.warnings[2].includes("chat/scene-s3.json"));
+});

@@ -9,6 +9,12 @@ export function emptyBible(){
 
 function str(v){ return typeof v==="string" ? v : (v==null ? "" : String(v)); }
 
+// Provenance of a proposed card: a plain object with a string kind, else null.
+function normSource(v){
+  if(!v || typeof v!=="object" || Array.isArray(v) || typeof v.kind!=="string") return null;
+  return Object.assign({}, v);
+}
+
 function normalizeCard(raw){
   if(!raw || typeof raw!=="object") return null;
   var name=str(raw.name).trim();
@@ -24,6 +30,7 @@ function normalizeCard(raw){
     body: str(raw.body),
     pinned: !!raw.pinned,
     status: typeof raw.status==="string" && raw.status ? raw.status : "approved",
+    source: normSource(raw.source),
     createdAt: Number(raw.createdAt) || now,
     updatedAt: Number(raw.updatedAt) || Number(raw.createdAt) || now
   };
@@ -58,6 +65,7 @@ export function newCard(partial, idFn){
     body: str(p.body),
     pinned: !!p.pinned,
     status: p.status || "approved",
+    source: normSource(p.source),
     createdAt: now,
     updatedAt: now
   };
@@ -133,4 +141,47 @@ export function cardToText(card){
   var head="### "+card.name+" ("+card.type+(aliases.length ? "; also: "+aliases.join(", ") : "")+")";
   var body=str(card.body).trim();
   return body ? head+"\n"+body : head;
+}
+
+// Facts the model spotted become proposed cards, unless a card (approved or proposed) already has that name or alias.
+export function proposeFacts(bible, facts, source, idFn){
+  var b=bible||emptyBible();
+  var cards=(b.cards||[]).slice();
+  var taken={};
+  cards.forEach(function(c){
+    [c.name].concat(c.aliases||[]).forEach(function(t){
+      var k=str(t).trim().toLowerCase();
+      if(k) taken[k]=true;
+    });
+  });
+  var added=[];
+  (Array.isArray(facts) ? facts : []).forEach(function(f){
+    if(added.length>=8 || !f || typeof f!=="object") return;
+    var name=str(f.name).trim(), k=name.toLowerCase();
+    if(!name || name.length>60 || k==="none" || taken[k]) return;
+    taken[k]=true;
+    added.push(newCard({ type:f.type, name:name, body:str(f.body).trim(), status:"proposed", source:source }, idFn));
+  });
+  if(!added.length) return { bible:Object.assign({}, b, { cards:cards }), added:added };
+  return { bible:Object.assign({}, b, { cards:cards.concat(added), updatedAt:Date.now() }), added:added };
+}
+
+export function acceptCard(bible, id){
+  var found=false, now=Date.now();
+  var cards=(bible.cards||[]).map(function(c){
+    if(c.id!==id) return c;
+    found=true;
+    return Object.assign({}, c, { status:"approved", updatedAt:now });
+  });
+  return found ? Object.assign({}, bible, { cards:cards, updatedAt:now }) : Object.assign({}, bible, { cards:cards });
+}
+
+export function listProposed(bible){
+  return ((bible && bible.cards)||[]).filter(function(c){ return c.status==="proposed"; })
+    .sort(function(a, b){ return (a.createdAt||0)-(b.createdAt||0); });
+}
+
+export function cardNames(bible){
+  return ((bible && bible.cards)||[]).filter(function(c){ return c.status==="approved"; })
+    .map(function(c){ return c.name; });
 }

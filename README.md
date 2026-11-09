@@ -1,6 +1,6 @@
 # Ownchat
 
-A single-file, mobile-first chat web app that talks to **OpenRouter** models
+A mobile-first chat web app (the root chat is a single file) that talks to **OpenRouter** models
 using your own API key. Presets include Grok 4.7 (the default) and Grok 4.5, plus
 Claude Opus 4.8 / Opus 4.8 fast / Sonnet 4.6 / Haiku 4.5; any other OpenRouter
 model slug can be typed in. The key and chat
@@ -126,9 +126,19 @@ https://serhiimartynenko.github.io/Ownchat-/
 
 ## Development
 
-It's a single `index.html` — open it directly in a browser, or serve the folder:
+The chat is a single root `index.html` — open it directly in a browser, or serve the folder:
 
 ```bash
 python3 -m http.server 8000
 # then visit http://localhost:8000
 ```
+
+## Writing tool (preview)
+
+The AI writing app lives in `write/` and is published at
+`https://serhiimartynenko.github.io/Ownchat-/write/`. It is a separate PWA on the
+same origin as the chat, with its own storage keys, and it leaves the root chat
+untouched. It uses ES modules, so it must be served over http (it won't work from
+`file://`): run `python3 -m http.server` from the repo root and open `/write/`.
+
+Run all tests with `npm test` (or `node --test`).

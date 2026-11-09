@@ -5,6 +5,7 @@ on:
     branches:
       - claude/github-pages-chat-deploy-h64nfp
       - main
+      - claude/ai-writing-tool-planning-fowkbw
   workflow_dispatch:
 
 permissions:

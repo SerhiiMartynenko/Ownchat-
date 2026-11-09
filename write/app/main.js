@@ -4,7 +4,15 @@ import { normalizeBible } from "./bible.js";
 import { assembleContext } from "./context.js";
 import { SUMMARY_DEFAULTS, planFold, runFold } from "./summaries.js";
 import { openDb, requestPersistence } from "./db.js";
+import { createStore, emptyThread } from "./store.js";
+import { blocksToText } from "./scene.js";
+import { shareOrDownload, exportBundle, exportManuscript, readBundleFile } from "./export.js";
+import { parseRoute, formatRoute } from "./router.js";
 import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
+import { initMenu, openMenu, closeMenu } from "./ui/menu.js";
+import { initLibrary } from "./ui/library.js";
+import { initOutline } from "./ui/outline.js";
+import { initSceneEditor } from "./ui/scene.js";
 
 (function(){
   /* ===== Constants ===== */
@@ -38,8 +46,11 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
   var settings = { apiKey:"", model:DEFAULT_MODEL, utilityModel:DEFAULT_UTILITY_MODEL, thinking:"max", system:"", endpoint:"" };
   var messages = [];          // the thread's messages; single source for rendering (same array as thread.messages)
   var db = null;              // storage handle from openDb()
+  var store = null;           // project store over db (store.js)
+  var project = null;         // the open project record
+  var activeScene = null;     // the project's active scene record (last opened), or null
   var bible = normalizeBible({});
-  var thread = null;          // thread record, see emptyThread()
+  var thread = null;          // the project's thread record, see store.emptyThread()
   var threadGen = 0;          // bumped on newChat so stale summary jobs are ignored
   var summaryJob = null;      // { controller } while a fold runs
   var summaryFailed = false;
@@ -126,27 +137,7 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
 
   /* ===== Export (iOS share sheet -> Save to Files, with download fallback) ===== */
   function exportMarkdown(text, filename){
-    var blob = new Blob([text], { type:"text/markdown" });
-    try{
-      var file = new File([blob], filename, { type:"text/markdown" });
-      if(navigator.canShare && navigator.canShare({ files:[file] }) && navigator.share){
-        // Share ONLY the file. Passing title/text makes some targets save a second .txt of that text.
-        navigator.share({ files:[file] }).then(function(){}, function(err){
-          if(err && err.name==="AbortError") return;
-          anchorDownload(blob, filename);
-        });
-        return;
-      }
-    }catch(e){ /* File ctor or share unsupported -> fallback */ }
-    anchorDownload(blob, filename);
-  }
-  function anchorDownload(blob, filename){
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
-    a.href = url; a.download = filename; a.rel = "noopener";
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
-    toast("Exported " + filename);
+    return shareOrDownload(new Blob([text], { type:"text/markdown" }), filename, { toast: toast });
   }
 
   /* ===== Message DOM ===== */
@@ -379,7 +370,7 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
     var gen = threadGen;
     var ctx;
     try{
-      ctx = assembleContext({ model: settings.model, bible: bible,
+      ctx = assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(),
         thread: { messages: messages, summary: thread.summary, summarizedUpTo: thread.summarizedUpTo } });
     }catch(e){
       finalizeError(els, (e && e.message) ? e.message : "Could not build the request.", els.node);
@@ -461,34 +452,16 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
   function hideEmpty(){ empty.style.display = "none"; }
   function refreshEmpty(){ if(messages.length) hideEmpty(); else showEmpty(); }
 
-  /* ===== Thread (IndexedDB) ===== */
-  function emptyThread(){
-    return { id:"default", messages:[], summary:"", summarizedUpTo:0, summarizedUpToId:null,
-      summaryModel:"", summaryUpdatedAt:0, lastUsage:null, updatedAt:0 };
-  }
-  function resetSummary(t){
-    t.summary = ""; t.summarizedUpTo = 0; t.summarizedUpToId = null; t.summaryModel = ""; t.summaryUpdatedAt = 0;
-  }
-  function normalizeThread(rec){
-    var t = Object.assign(emptyThread(), rec && typeof rec === "object" ? rec : {});
-    if(!Array.isArray(t.messages)) t.messages = [];
-    t.summary = typeof t.summary === "string" ? t.summary : "";
-    t.summarizedUpTo = Math.max(0, Number(t.summarizedUpTo) || 0);
-    if(t.summarizedUpTo > 0){
-      var m = t.messages[t.summarizedUpTo - 1];
-      if(!m || m.id !== t.summarizedUpToId) resetSummary(t);
-    }
-    return t;
-  }
+  /* ===== Thread and bible (through the project store) ===== */
   function saveThread(){
-    if(!thread || !db) return;
+    if(!thread || !store || !project) return;
     thread.messages = messages;
     thread.updatedAt = Date.now();
-    db.put("threads", thread).catch(function(){ toast("Could not save the conversation"); });
+    store.saveThread(project.id, thread).catch(function(){ toast("Could not save the conversation"); });
   }
   function saveBible(){
-    if(!db) return;
-    db.put("bible", bible).catch(function(){ toast("Could not save the story bible"); });
+    if(!store || !project) return;
+    store.saveBible(project.id, bible).catch(function(){ toast("Could not save the story bible"); });
   }
 
   /* ===== Legacy import (chat history from the original app) ===== */
@@ -533,12 +506,15 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
   }
 
   function newChat(){
+    if(!thread || !project) return;
     if(messages.length && !window.confirm("Start a new chat? This clears the current conversation on this device.")) return;
     if(isStreaming && currentAbort) currentAbort.abort();
     if(summaryJob){ summaryJob.controller.abort(); summaryJob = null; }
     threadGen++;
     summaryFailed = false;
-    thread = emptyThread();
+    var includeScene = thread.includeScene !== false;
+    thread = emptyThread(thread.id, project.id);
+    thread.includeScene = includeScene;
     messages = thread.messages;
     saveThread();
     renderHistory(); updateMeter();
@@ -588,21 +564,43 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
   function bibleHasContent(){
     return !!((bible.brief || "").trim() || (bible.styleGuide || "").trim() || (bible.cards || []).length);
   }
+  // The active scene as a context layer, or null when there is none or the chat has it switched off.
+  function sceneForContext(){
+    return thread && thread.includeScene && activeScene
+      ? { title: activeScene.title || "", text: blocksToText(activeScene.blocks) }
+      : null;
+  }
   function previewContext(){
     // The draft (possibly empty) is the would-be current message; every stored message is history.
-    return assembleContext({ model: settings.model, bible: bible,
+    return assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(),
       thread: { messages: messages, summary: thread ? thread.summary : "", summarizedUpTo: thread ? thread.summarizedUpTo : 0 },
       draft: input.value.trim() ? input.value : "" });
   }
+  function refreshSceneChip(){
+    var chip = $("sceneChip");
+    if(!activeScene || !thread){ chip.hidden = true; chip.classList.remove("on"); return; }
+    var on = thread.includeScene !== false;
+    $("sceneChipText").textContent = "Scene: " + (activeScene.title || "Untitled scene") + " \u00b7 " + (on ? "On" : "Off");
+    chip.classList.toggle("on", on);
+    chip.setAttribute("aria-pressed", on ? "true" : "false");
+    chip.hidden = false;
+  }
+  function toggleSceneInContext(){
+    if(!thread || !activeScene) return;
+    thread.includeScene = thread.includeScene === false;
+    saveThread(); refreshSceneChip(); updateMeter();
+  }
   function updateMeter(){
+    refreshSceneChip();
     if(!thread) return;
     var hasDraft = !!input.value.trim();
-    if(!messages.length && !hasDraft && !bibleHasContent()){ ctxMeter.hidden = true; lastBreakdown = null; return; }
+    if(!messages.length && !hasDraft && !bibleHasContent() && !sceneForContext()){ ctxMeter.hidden = true; lastBreakdown = null; return; }
     var b;
     try{ b = previewContext().breakdown; }catch(e){ ctxMeter.hidden = true; return; }
     lastBreakdown = b;
     var L = layerMap(b);
     var html = "~" + fmtK(b.total) + " tokens \u00b7 " + L.cards.cards.length + " cards \u00b7 " + L.summary.folded + " folded";
+    if(L.scene && L.scene.included) html += L.scene.truncated ? ' \u00b7 <span class="warn">scene trimmed</span>' : " \u00b7 scene";
     if(L.recent.droppedUnsummarized > 0) html += ' \u00b7 <span class="warn">' + L.recent.droppedUnsummarized + " trimmed</span>";
     if(summaryJob) html += " \u00b7 summarizing\u2026";
     if(summaryFailed) html += ' \u00b7 <span class="err">summary failed</span>';
@@ -632,6 +630,12 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
           detail = l.count + " messages" + (l.droppedUnsummarized > 0 ? ", " + l.droppedUnsummarized + " trimmed" : "");
         } else if(l.key === "summary"){
           detail = l.folded ? l.folded + " messages folded" : "";
+        } else if(l.key === "scene"){
+          if(l.included){
+            detail = (l.title || "Untitled scene") + (l.truncated ? " · start trimmed (~" + (l.omittedTokens || 0).toLocaleString() + " tokens left out)" : "");
+          } else {
+            detail = activeScene ? "off" : "no scene open";
+          }
         }
         var li = document.createElement("li"); li.className = "layer-row";
         var a = document.createElement("span"); a.className = "layer-label"; a.textContent = l.label; li.appendChild(a);
@@ -785,7 +789,7 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
     app.style.transform = "translateY(" + vv.offsetTop + "px)";
     var kbOpen = (window.innerHeight - vv.height) > 120;
     document.body.classList.toggle("kb-open", kbOpen);
-    if(stick) scrollBottom();
+    if(stick && currentView === "chat") scrollBottom();
   }
 
   /* ===== Home-screen icon + manifest (generated, keeps the file standalone) ===== */
@@ -821,24 +825,283 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
     }catch(e){}
   }
 
-  /* ===== Wire up ===== */
-  function loadStores(){
-    return openDb().then(function(handle){
-      db = handle;
-      return db.get("bible", "default").catch(function(){ return undefined; });
-    }).then(function(raw){
-      bible = normalizeBible(raw, settings.system);
-      // First run: the legacy system prompt becomes the style guide (normalizeBible did that); store it once.
-      if(raw == null) return db.put("bible", bible).catch(function(){});
-    }).then(function(){
-      return db.get("threads", "default").catch(function(){ return undefined; });
-    }).then(function(rec){
-      thread = normalizeThread(rec);
-      messages = thread.messages;
-      if(rec == null) saveThread();
-    });
+  /* ===== Projects, routing and views ===== */
+  var VIEW_IDS = { library:"viewLibrary", outline:"viewOutline", scene:"viewScene", chat:"viewChat" };
+  var currentView = "library";
+  var currentRoute = null;
+  var goSeq = 0;
+  var navStack = [];          // hashes visited in this tab; Back uses history.back() when the parent is the previous one
+  var chatOrigin = null;      // { hash, projectId } of the view the chat was opened from
+  var library = null, outline = null, sceneEditor = null;
+  var metaQueue = Promise.resolve();
+  var routeSaveTimer = null;
+  var settingsPrompted = false;
+
+  function setMeta(patch){
+    // Serialised so read-modify-write updates of the meta record cannot overwrite each other.
+    metaQueue = metaQueue.then(function(){ return store.setMeta(patch); }).catch(function(){});
+    return metaQueue;
+  }
+  function rememberRoute(hash){
+    clearTimeout(routeSaveTimer);
+    routeSaveTimer = setTimeout(function(){ setMeta({ lastRoute: hash }); }, 400);
   }
 
+  function show(view){
+    currentView = view;
+    Object.keys(VIEW_IDS).forEach(function(v){ $(VIEW_IDS[v]).classList.toggle("active", v === view); });
+    document.body.dataset.view = view;
+    document.querySelectorAll("[data-views]").forEach(function(el){
+      el.hidden = el.dataset.views.split(" ").indexOf(view) < 0;
+    });
+  }
+  function setHeader(title, sub){
+    $("hdrTitle").textContent = title || "";
+    var s = $("hdrSub");
+    s.textContent = sub || "";
+    s.style.display = sub ? "" : "none";
+  }
+  function wordsLabel(n){ n = Number(n) || 0; return n.toLocaleString() + (n === 1 ? " word" : " words"); }
+
+  // Forget the open project: stop its stream and summary job and drop its records.
+  function closeProject(){
+    if(isStreaming && currentAbort) currentAbort.abort();
+    if(summaryJob){ summaryJob.controller.abort(); summaryJob = null; }
+    threadGen++;
+    summaryFailed = false;
+    project = null; thread = null; messages = []; activeScene = null; bible = normalizeBible({});
+    lastBreakdown = null; chatOrigin = null;
+    attachments = []; renderAttachmentChips();
+  }
+
+  // Makes pid the open project (no-op apart from a refresh when it already is). Resolves false if missing.
+  async function openProject(pid){
+    var p = await store.getProject(pid);
+    if(!p) return false;
+    if(project && project.id === pid){ project = p; return true; }
+    if(sceneEditor) await sceneEditor.flush();
+    var b = await store.getBible(p), t = await store.getThread(p);
+    var sc = p.lastSceneId ? await store.getScene(p.lastSceneId) : null;
+    closeProject();
+    project = p; bible = b; thread = t; messages = thread.messages;
+    activeScene = sc && sc.projectId === p.id ? sc : null;
+    setMeta({ currentProjectId: p.id });
+    renderHistory(); updateMeter();
+    return true;
+  }
+
+  async function reloadActiveScene(){
+    if(sceneEditor) await sceneEditor.flush();
+    var p = await store.getProject(project.id);
+    if(p) project = p;
+    var sc = project.lastSceneId ? await store.getScene(project.lastSceneId) : null;
+    activeScene = sc && sc.projectId === project.id ? sc : null;
+  }
+
+  async function deleteProject(pid){
+    if(project && project.id === pid){
+      if(sceneEditor) await sceneEditor.close();
+      closeProject();
+    }
+    await store.deleteProject(pid);
+  }
+
+  function noteNav(hash, replace){
+    if(replace || !navStack.length){ navStack[Math.max(0, navStack.length - 1)] = hash; return; }
+    if(navStack.length > 1 && navStack[navStack.length - 2] === hash) navStack.pop();
+    else if(navStack[navStack.length - 1] !== hash) navStack.push(hash);
+  }
+  function navigate(route, opts){
+    if(opts && opts.replace) return replaceRoute(route);
+    var hash = formatRoute(route);
+    if(location.hash === hash) return go(route);
+    location.hash = hash;     // the hashchange listener calls go()
+    return Promise.resolve();
+  }
+  function replaceRoute(route){
+    var hash = formatRoute(route);
+    history.replaceState(null, "", hash);
+    noteNav(hash, true);
+    return go(route);
+  }
+  function notFound(){
+    toast("Not found");
+    return replaceRoute({ name:"library" });
+  }
+
+  function parentOf(route){
+    if(route.name === "scene") return project ? { name:"outline", projectId: project.id } : { name:"library" };
+    if(route.name === "chat"){
+      if(chatOrigin && chatOrigin.projectId === route.projectId) return parseRoute(chatOrigin.hash);
+      return { name:"outline", projectId: route.projectId };
+    }
+    if(route.name === "outline") return { name:"library" };
+    return null;
+  }
+  function goBack(){
+    var parent = currentRoute && parentOf(currentRoute);
+    if(!parent) return;
+    if(navStack.length > 1 && navStack[navStack.length - 2] === formatRoute(parent)) history.back();
+    else replaceRoute(parent);
+  }
+
+  async function go(route){
+    var seq = ++goSeq;
+    closeMenu();
+    try{
+      if(currentView === "scene" && sceneEditor) await sceneEditor.flush();
+      if(seq !== goSeq) return;
+      if(route.name === "library"){
+        await library.renderLibrary();
+        if(seq !== goSeq) return;
+        setHeader("Projects", "");
+        show("library");
+      } else if(route.name === "outline" || route.name === "chat"){
+        if(!(await openProject(route.projectId))){ if(seq === goSeq) notFound(); return; }
+        if(seq !== goSeq) return;
+        if(route.name === "outline"){
+          var o = await outline.renderOutline(project.id);
+          if(seq !== goSeq) return;
+          setHeader(project.title, wordsLabel(o ? o.words : 0));
+          show("outline");
+        } else {
+          await reloadActiveScene();
+          if(seq !== goSeq) return;
+          setHeader(project.title, "");
+          show("chat");
+          updateMeter(); refreshImport();
+          stick = true; scrollBottom();
+          if(!settings.apiKey && !settingsPrompted){ settingsPrompted = true; setTimeout(openSettings, 350); }
+        }
+      } else if(route.name === "scene"){
+        var s = await store.getScene(route.sceneId);
+        if(!s || !(await openProject(s.projectId))){ if(seq === goSeq) notFound(); return; }
+        if(seq !== goSeq) return;
+        await sceneEditor.open(s.id);
+        if(seq !== goSeq) return;
+        setHeader(project.title, "");
+        show("scene");
+      }
+      currentRoute = route;
+      rememberRoute(formatRoute(route));
+    }catch(e){
+      toast("Something went wrong: " + ((e && e.message) ? e.message : "unknown error"));
+    }
+  }
+
+  async function routeResolves(r){
+    if(!r) return false;
+    if(r.name === "library") return true;
+    if(r.name === "scene") return !!(await store.getScene(r.sceneId));
+    return !!(await store.getProject(r.projectId));
+  }
+  async function landingRoute(meta){
+    if(location.hash && location.hash !== "#") return parseRoute(location.hash);
+    if(meta.lastRoute){
+      var last = parseRoute(meta.lastRoute);
+      if(await routeResolves(last)) return last;
+    }
+    if(meta.currentProjectId && await store.getProject(meta.currentProjectId)) return { name:"outline", projectId: meta.currentProjectId };
+    var projects = await store.listProjects();
+    return projects.length ? { name:"outline", projectId: projects[0].id } : { name:"library" };
+  }
+
+  /* ===== Export / import ===== */
+  async function exportProject(pid, kind){
+    try{
+      if(project && project.id === pid && sceneEditor) await sceneEditor.flush();
+      var data = await store.loadProjectData(pid);
+      if(!data) throw new Error("Project not found");
+      if(kind === "manuscript") await exportManuscript(data, { toast: toast });
+      else await exportBundle(data, { toast: toast });
+    }catch(e){
+      toast((e && e.message) ? e.message : "Export failed");
+    }
+  }
+
+  // A bundle whose project id is new is imported keeping its ids ("replace" with nothing to replace).
+  async function importFile(file){
+    try{
+      var data = await readBundleFile(file, { toast: toast, uid: uid });
+      var srcId = data && data.project && data.project.id;
+      var existing = srcId ? await store.getProject(String(srcId)) : null;
+      var mode = "replace";
+      if(existing){
+        var act = await openMenu("Project already exists", [
+          { act:"copy", label:"Import as a copy" },
+          { act:"replace", label:"Replace existing", danger:true },
+          { act:"cancel", label:"Cancel" }
+        ]);
+        if(act !== "copy" && act !== "replace") return;
+        mode = act;
+        if(mode === "replace" && project && project.id === existing.id){
+          if(sceneEditor) await sceneEditor.close();
+          closeProject();
+        }
+      }
+      var pid = await store.importProject(data, { mode: mode });
+      var w = (data.warnings || []).length;
+      toast("Imported" + (w ? " with " + w + (w === 1 ? " warning" : " warnings") : ""));
+      await navigate({ name:"outline", projectId: pid });
+    }catch(e){
+      toast((e && e.message) ? e.message : "Import failed");
+    }
+  }
+
+  /* ===== Startup ===== */
+  async function start(){
+    db = await openDb({
+      onBlocked: function(){ toast("Close other Ownchat Write tabs to finish updating"); },
+      onVersionChange: function(){ toast("Updated in another tab, reload"); }
+    });
+    store = createStore(db, { uid: uid });
+    var meta = await store.init({ legacySystem: settings.system });
+
+    initMenu({ $: $ });
+    library = initLibrary({ $: $, store: store, toast: toast, openMenu: openMenu, go: navigate,
+      exportProject: exportProject, importFile: importFile, deleteProject: deleteProject,
+      onRenamed: function(pid){ if(project && project.id === pid) store.getProject(pid).then(function(p){ if(p && project && project.id === p.id) project = p; }); } });
+    outline = initOutline({ $: $, store: store, toast: toast, openMenu: openMenu, go: navigate,
+      exportProject: exportProject, deleteProject: deleteProject, openSettings: openSettings,
+      onRendered: function(o){
+        if(project && o.project && o.project.id === project.id && currentView === "outline") setHeader(project.title, wordsLabel(o.words));
+      },
+      onProjectRenamed: function(pid){
+        store.getProject(pid).then(function(p){
+          if(p && project && project.id === p.id){ project = p; if(currentView === "outline") setHeader(p.title, $("hdrSub").textContent); }
+        });
+      },
+      onSceneRenamed: function(sid){ if(activeScene && activeScene.id === sid) store.getScene(sid).then(function(s){ if(s && activeScene && activeScene.id === s.id) activeScene = s; }); },
+      onScenesDeleted: function(ids){ if(activeScene && ids.indexOf(activeScene.id) >= 0){ activeScene = null; updateMeter(); } } });
+    sceneEditor = initSceneEditor({ $: $, store: store, toast: toast, uid: uid,
+      onOpened: function(s){ if(project && s.projectId === project.id){ activeScene = s; project.lastSceneId = s.id; } },
+      onSaved: function(rec){ if(activeScene && activeScene.id === rec.id) activeScene = rec; } });
+
+    $("hdrBack").addEventListener("click", goBack);
+    $("hdrChat").addEventListener("click", function(){
+      if(!project) return;
+      chatOrigin = { hash: formatRoute(currentRoute), projectId: project.id };
+      navigate({ name:"chat", projectId: project.id });
+    });
+    $("sceneChip").addEventListener("click", toggleSceneInContext);
+    $("openBible").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
+    $("openSettings").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
+    window.addEventListener("hashchange", function(){
+      noteNav(location.hash, false);
+      go(parseRoute(location.hash));
+    });
+
+    var landing = await landingRoute(meta);
+    var hash = formatRoute(landing);
+    history.replaceState(null, "", hash);
+    navStack = [hash];
+    await go(landing);
+    if(db.memory) toast("Storage unavailable; changes will not persist.");
+    requestPersistence().catch(function(){});
+    document.documentElement.dataset.ready = "1";
+  }
+
+  /* ===== Wire up ===== */
   function init(){
     loadSettings(); updatePill();
     renderPresets($("presets"), setModel); renderPresets($("utilityPresets"), setUtility);
@@ -902,14 +1165,7 @@ import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
     window.addEventListener("orientationchange", function(){ setTimeout(syncViewport, 250); });
 
     autoresize();
-    loadStores().then(function(){
-      renderHistory();
-      updateMeter();
-      if(db.memory) toast("Storage unavailable; changes will not persist.");
-      requestPersistence().catch(function(){});
-      if(!settings.apiKey) setTimeout(openSettings, 350);
-      document.documentElement.dataset.ready = "1";
-    }, function(err){
+    start().catch(function(err){
       toast("App failed to load: " + ((err && err.message) ? err.message : "storage error"));
     });
   }

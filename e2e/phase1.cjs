@@ -73,6 +73,13 @@ async function run(browser) {
     r.onerror = () => rej(r.error);
   }), store);
   const ready = async () => { await page.waitForSelector('html[data-ready="1"]', { timeout: 8000 }); await page.waitForTimeout(400); };
+  const toChat = async () => {
+    if (!(await page.locator('#viewChat.active').count())) {
+      await page.click('#hdrChat');
+      await page.waitForSelector('#viewChat.active', { timeout: 5000 });
+      await page.waitForTimeout(300);
+    }
+  };
   const closeSettingsIfOpen = async () => { if (await page.locator('#settingsOverlay.open').count()) await page.click('#setCancel'); };
   const sendAndWait = async (text) => {
     const n = await page.locator('.msg.assistant .msg-actions:not([hidden])').count();
@@ -88,6 +95,7 @@ async function run(browser) {
   // a
   await page.goto(BASE + '/write/');
   await ready();
+  await toChat();
   check('a. html[data-ready=1]', true);
   const ls = await page.evaluate(() => localStorage.getItem('ownchat.write.settings.v1'));
   check('a. settings copied to ownchat.write.settings.v1', ls && JSON.parse(ls).apiKey === 'k', ls);
@@ -162,7 +170,7 @@ async function run(browser) {
   await page.click('#ctxMeter');
   await page.waitForSelector('#ctxOverlay.open');
   const lr = await page.locator('#ctxLayers li.layer-row').count();
-  check('e. 5 layer rows', lr === 5, lr);
+  check('e. 6 layer rows', lr === 6, lr);
   const usage = await page.textContent('#ctxUsage');
   check('e. usage shows 1,234', usage.includes('1,234'), usage);
   await page.screenshot({ path: SHOTS + 'phase1-ctx.png' });

@@ -355,16 +355,52 @@
   #toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 96px);transform:translateX(-50%) translateY(10px);background:#262c38;border:1px solid var(--border);color:var(--text);padding:10px 16px;border-radius:12px;font-size:13.5px;font-weight:500;box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:60;opacity:0;pointer-events:none;transition:.22s}
   #toast.show{opacity:1;transform:translateX(-50%)}
 
+  /* ---------- Phase 5: notice, history window, hidden helpers ---------- */
+  .hint[hidden],#storageProtect[hidden]{display:none !important}
+  .notice{margin:12px auto 0;width:calc(100% - 24px);max-width:var(--maxw);padding:12px 14px;border-radius:14px;background:var(--surface);border:1px solid var(--accent)}
+  .notice[hidden]{display:none}
+  .notice p{margin:0 0 10px;font-size:14px;line-height:1.45}
+  .notice-acts{display:flex;gap:8px}
+  .notice-acts button{flex:1;padding:10px 12px;border-radius:11px;font-size:14px;font-weight:700}
+  .show-earlier{display:block;margin:14px auto 0;width:calc(100% - 32px);max-width:calc(var(--maxw) - 32px);min-height:40px;font-size:13.5px}
+  .show-earlier[hidden]{display:none}
+  .outline-head{display:none}
+  .scene-row.current{border-color:var(--accent);background:var(--surface-2)}
+
+  /* ---------- Desktop (>=1024px): sidebar + split; phone layout untouched ---------- */
+  body[data-layout="wide"] #views{flex-direction:row}
+  body[data-layout="wide"][data-view="scene"] #viewOutline,
+  body[data-layout="wide"][data-view="chat"] #viewOutline,
+  body[data-layout="wide"][data-view="split"] #viewOutline{display:flex;flex:0 0 300px;border-right:1px solid var(--border-soft);background:var(--bg-2)}
+  body[data-layout="wide"][data-view="scene"] #viewOutline .outline-head,
+  body[data-layout="wide"][data-view="chat"] #viewOutline .outline-head,
+  body[data-layout="wide"][data-view="split"] #viewOutline .outline-head{display:flex;flex:none;align-items:baseline;gap:8px;padding:14px 16px 4px}
+  .outline-head-title{flex:1;min-width:0;font-size:15px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .outline-head-meta{flex:none;font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  body[data-layout="wide"][data-view="scene"] #viewOutline .list,
+  body[data-layout="wide"][data-view="chat"] #viewOutline .list,
+  body[data-layout="wide"][data-view="split"] #viewOutline .list{max-width:none}
+  body[data-view="split"] #viewChat{flex:0 0 clamp(360px,36%,520px);min-width:0;border-left:1px solid var(--border-soft)}
+  body[data-view="split"] #viewScene{flex:1 1 auto;min-width:0}
+  body[data-view="split"] #empty p{max-width:100%}
+
+  @media (min-width:1024px){
+    .overlay{align-items:center}
+    .sheet{border-radius:var(--r);border-bottom:1px solid var(--border);max-height:85vh;max-height:calc(var(--vvh, 100vh) * .85);transform:translateY(10px);padding-top:16px;padding-bottom:20px}
+    .overlay.open .sheet{transform:none}
+    .grip{display:none}
+  }
+
   @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important}}
 </style>
 </head>
 <body>
 <div id="app">
   <header>
-    <button class="hbtn" id="hdrBack" data-views="outline scene chat" aria-label="Back" title="Back">
+    <button class="hbtn" id="hdrBack" data-views="outline scene chat split" aria-label="Back" title="Back">
       <svg class="ic" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
-    <button class="hbtn" id="newChat" data-views="chat" aria-label="New chat" title="New chat">
+    <button class="hbtn" id="newChat" data-views="chat split" aria-label="New chat" title="New chat">
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
     <div class="title-wrap">
@@ -372,7 +408,7 @@
       <div class="titles">
         <span class="app-title" id="hdrTitle">Ownchat Write</span>
         <span class="app-sub" id="hdrSub"></span>
-        <button class="model-pill" id="modelPill" data-views="chat"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
+        <button class="model-pill" id="modelPill" data-views="chat split"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
       </div>
     </div>
     <button class="hbtn" id="hdrNewProject" data-views="library" aria-label="New project" title="New project">
@@ -381,23 +417,24 @@
     <button class="hbtn" id="hdrImport" data-views="library" aria-label="Import bundle" title="Import bundle">
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
     </button>
-    <button class="hbtn hbtn-text" id="hdrMode" data-views="scene" type="button" aria-label="Switch editing mode" title="Switch editing mode">Write</button>
+    <button class="hbtn hbtn-text" id="hdrMode" data-views="scene split" type="button" aria-label="Switch editing mode" title="Switch editing mode">Write</button>
     <button class="hbtn" id="hdrChat" data-views="outline scene" aria-label="Project chat" title="Project chat">
       <svg class="ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
     </button>
-    <button class="hbtn" id="hdrMenu" data-views="outline scene" aria-label="More" title="More">
+    <button class="hbtn" id="hdrMenu" data-views="outline scene split" aria-label="More" title="More">
       <svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
     </button>
-    <button id="openBible" class="hbtn" data-views="outline scene chat" aria-label="Story bible" title="Story bible">
+    <button id="openBible" class="hbtn" data-views="outline scene chat split" aria-label="Story bible" title="Story bible">
       <svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
     </button>
-    <button class="hbtn" id="openSettings" data-views="library scene chat" aria-label="Settings" title="Settings">
+    <button class="hbtn" id="openSettings" data-views="library scene chat split" aria-label="Settings" title="Settings">
       <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </header>
 
   <main id="views">
     <section class="view active" id="viewLibrary">
+      <div id="libraryNotice" class="notice" hidden role="status"><p id="libraryNoticeText"></p><div class="notice-acts"><button id="libraryNoticeAct" class="btn-primary" type="button"></button><button id="libraryNoticeLater" class="btn-secondary" type="button">Later</button></div></div>
       <div id="projectList" class="list"></div>
       <div id="libraryEmpty" class="empty-view" hidden>
         <p>No projects yet.</p>
@@ -407,6 +444,7 @@
     </section>
 
     <section class="view" id="viewOutline">
+      <div id="outlineHead" class="outline-head"><span id="outlineHeadTitle" class="outline-head-title"></span><span id="outlineHeadMeta" class="outline-head-meta"></span></div>
       <div id="outlineList" class="list"></div>
       <div id="outlineEmpty" class="empty-view" hidden>
         <p>No chapters yet.</p>
@@ -436,6 +474,7 @@
     <section class="view" id="viewChat">
     <div id="chatScope" class="seg chat-scope" hidden><button type="button" data-v="scene" id="chatScopeScene">Scene</button><button type="button" data-v="project" id="chatScopeProject">Project</button></div>
     <div id="scroll">
+      <button id="showEarlier" class="ghost-btn show-earlier" type="button" hidden>Show earlier messages</button>
       <div id="list"></div>
       <div id="empty">
         <div class="ehero"><b>W</b></div>
@@ -507,6 +546,10 @@
     <div id="utilityPresets" class="presets"></div>
     <p class="hint">Used for background summaries. Reasoning is always off.</p>
     <button id="setOpenBible" class="ghost-btn btn-block" type="button">System prompt moved to Story bible → Style guide</button>
+    <h3 class="sheet-sub">Storage</h3>
+    <p class="hint" id="storageStatus">Checking storage…</p>
+    <button id="storageProtect" class="ghost-btn btn-block" type="button">Protect storage</button>
+    <p class="hint" id="storageInstallHint" hidden>On iPhone, add this page to the Home Screen (Share → Add to Home Screen) so Safari never clears your writing.</p>
     <h3 class="sheet-sub">Advanced</h3>
     <label for="setEndpoint">API endpoint (optional proxy)</label>
     <input type="url" id="setEndpoint" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">

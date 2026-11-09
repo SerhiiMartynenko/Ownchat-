@@ -1,1 +1,1 @@
-{"name":"ownchat","private":true,"type":"module","scripts":{"test":"node --test"}}
+{"name":"ownchat","private":true,"type":"module","scripts":{"test":"node --test","e2e":"node e2e/phase1.cjs"}}

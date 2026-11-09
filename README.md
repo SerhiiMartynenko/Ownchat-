@@ -142,3 +142,6 @@ untouched. It uses ES modules, so it must be served over http (it won't work fro
 `file://`): run `python3 -m http.server` from the repo root and open `/write/`.
 
 Run all tests with `npm test` (or `node --test`).
+
+`npm run e2e` runs the browser end-to-end checks (needs Playwright + Chromium
+installed locally).

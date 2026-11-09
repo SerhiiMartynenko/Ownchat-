@@ -1,6 +1,6 @@
 # Ownchat Writing Tool: Design
 
-Status: phases 1 and 2 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
+Status: phases 1 to 3 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
 
 ## 1. Goal
 
@@ -175,7 +175,7 @@ top-level session only briefs, reviews and verifies. Each phase ends with the
 app usable on the phone PWA and with `node --test` passing for any new
 pure-logic modules (context budgeting, diff, export/import).
 
-## Implementation notes (phases 1 and 2)
+## Implementation notes (phases 1 to 3)
 
 Deviations from the design above:
 
@@ -188,3 +188,8 @@ Deviations from the design above:
 - The scene layer sits after the cards and before the summary. This reaches
   Anthropic's limit of 4 cache breakpoints, so phase 4 must merge markers.
 - Settings stay in localStorage, not IndexedDB.
+- Phase 3: the blocks surface is the default scene view, and a "Write" mode keeps the
+  plain textarea for long typing; both edit the same draft and share one autosave.
+  Rewrite requests are built separately from the chat context (rules + style guide +
+  brief, then matched cards) and use at most 2 cache breakpoints. Versions are kept
+  on the device only, capped at 30 per scene, and are not in the export bundle.

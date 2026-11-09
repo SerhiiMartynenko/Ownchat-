@@ -45,6 +45,18 @@ export function initSceneEditor(deps){
   function draftText(){ return mode === "write" ? textEl.value : blocksToText(blocksUI.getBlocks()); }
   function setStatus(s){ savedEl.textContent = s; savedEl.setAttribute("data-state", s === "Saved" ? "saved" : s === "Edited" ? "edited" : "saving"); }
   function dirty(){ return !!scene && (blocksToText(draftBlocks()) !== savedText || titleEl.value !== savedTitle); }
+  // The draft once: its blocks, its text and (Write mode) the raw textarea value it came from.
+  function draftState(){
+    if(!scene) return { blocks: [], text: "", raw: null };
+    var raw = mode === "write" ? textEl.value : null;
+    var blocks = mode === "write" ? textToBlocks(raw, scene.blocks, uid) : blocksUI.getBlocks();
+    return { blocks: blocks, text: blocksToText(blocks), raw: raw };
+  }
+  // After a save of draft d: nothing was typed since (same mode, raw text and title) and it was stored.
+  function unchangedSince(d, title){
+    return d.raw !== null && mode === "write" && textEl.value === d.raw && titleEl.value === title &&
+      savedText === d.text && savedTitle === title;
+  }
   function showWords(){
     var n = scene ? countWords(draftText()) : 0;
     wordsEl.textContent = n.toLocaleString() + (n === 1 ? " word" : " words");
@@ -68,9 +80,9 @@ export function initSceneEditor(deps){
     clearTimers();
     if(!scene) return Promise.resolve();
     if(inflight){ again = true; return inflight; }
-    if(!dirty()){ setStatus("Saved"); return Promise.resolve(); }
     var target = scene, title = titleEl.value;
-    var blocks = draftBlocks(), text = blocksToText(blocks);
+    var d = draftState(), blocks = d.blocks, text = d.text;
+    if(text === savedText && title === savedTitle){ setStatus("Saved"); return Promise.resolve(); }
     setStatus("Saving…");
     inflight = store.saveScene({ id: target.id, title: title.trim() || "Untitled scene", blocks: blocks, wordCount: countWords(text) })
       .then(function(rec){
@@ -86,7 +98,7 @@ export function initSceneEditor(deps){
       .then(function(){
         inflight = null;
         if(again){ again = false; return save(); }
-        if(scene) setStatus(dirty() ? "Edited" : "Saved");
+        if(scene) setStatus(unchangedSince(d, title) || !dirty() ? "Saved" : "Edited");
       });
     return inflight;
   }

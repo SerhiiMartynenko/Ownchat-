@@ -1,7 +1,5 @@
 // Outline view: chapters and scenes of one project, with menus to rename, move and delete.
 import { el, rowMenu, words } from "./common.js";
-import { blocksToText } from "../scene.js";
-import { hashText } from "../util.js";
 
 export function initOutline(deps){
   var $ = deps.$, store = deps.store, toast = deps.toast, openMenu = deps.openMenu;
@@ -48,7 +46,7 @@ export function initOutline(deps){
         var main = el("span", "row-main");
         main.appendChild(el("span", "row-title", sc.title || "Untitled scene"));
         var sum = (sc.summary || "").trim();
-        var stale = !!sum && hashText(blocksToText(sc.blocks)) !== sc.summaryHash;
+        var stale = !!sum && !!sc.stale;
         var sumEl = el("span", "scene-summary" + (stale ? " stale" : ""), sum ? sum + (stale ? " \u00b7 out of date" : "") : "No summary yet");
         main.appendChild(sumEl);
         row.appendChild(main);

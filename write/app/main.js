@@ -506,7 +506,7 @@ import { initStorageUI } from "./ui/storage.js";
       if(typeof c.content !== "string") c.content = String(c.content == null ? "" : c.content);
       messages.push(c);
     });
-    saveThread(); renderHistory(); updateMeter();
+    saveThread(); historyChanged(); updateMeter();
     toast("Imported " + arr.length + " messages");
   }
 
@@ -533,6 +533,13 @@ import { initStorageUI } from "./ui/storage.js";
     else requestAnimationFrame(scrollBottom);
   }
   function resetHistoryWindow(){ historyShown = HISTORY_WINDOW; }
+  // The thread changed: render now when the chat is on screen, otherwise the first time it is shown.
+  var historyDirty = true;
+  function historyChanged(){
+    historyDirty = true;
+    if(chatShown()) renderHistoryNow();
+  }
+  function renderHistoryNow(){ historyDirty = false; renderHistory(); }
   function showEarlier(){
     if(messages.length <= historyShown) return;
     historyShown += HISTORY_WINDOW;
@@ -555,7 +562,7 @@ import { initStorageUI } from "./ui/storage.js";
     messages = thread.messages;
     resetHistoryWindow();
     saveThread();
-    renderHistory(); updateMeter();
+    historyChanged(); updateMeter();
   }
 
   /* ===== Rolling summaries ===== */
@@ -925,8 +932,9 @@ import { initStorageUI } from "./ui/storage.js";
 
   function setMeta(patch){
     // Serialised so read-modify-write updates of the meta record cannot overwrite each other.
-    metaQueue = metaQueue.then(function(){ return store.setMeta(patch); }).catch(function(){});
-    return metaQueue;
+    var p = metaQueue.then(function(){ return store.setMeta(patch); });
+    metaQueue = p.catch(function(){});
+    return p;
   }
   function rememberRoute(hash){
     clearTimeout(routeSaveTimer);
@@ -990,7 +998,7 @@ import { initStorageUI } from "./ui/storage.js";
     summaryFailed = false;
     project = null; thread = null; messages = []; activeScene = null; bible = normalizeBible({});
     lastBreakdown = null; chatOrigin = null; storyChain = [];
-    resetHistoryWindow();
+    resetHistoryWindow(); historyDirty = true;
     attachments = []; renderAttachmentChips();
     refreshProposedBadge();
   }
@@ -1007,7 +1015,7 @@ import { initStorageUI } from "./ui/storage.js";
     project = p; bible = b; thread = t; messages = thread.messages;
     activeScene = sc && sc.projectId === p.id ? sc : null;
     setMeta({ currentProjectId: p.id });
-    renderHistory(); updateMeter(); refreshProposedBadge();
+    historyChanged(); updateMeter(); refreshProposedBadge();
     return true;
   }
 
@@ -1020,7 +1028,7 @@ import { initStorageUI } from "./ui/storage.js";
     summaryFailed = false;
     thread = t; messages = thread.messages;
     resetHistoryWindow();
-    renderHistory(); refreshScope(); updateMeter();
+    historyChanged(); refreshScope(); updateMeter();
   }
   async function loadThreadFor(route){
     if(!project) return;
@@ -1222,6 +1230,7 @@ import { initStorageUI } from "./ui/storage.js";
   function showChat(view){
     setHeader(project.title, "");
     show(view === "split" ? "split" : "chat");
+    if(historyDirty) renderHistoryNow();
     refreshScope(); updateMeter(); refreshImport();
     stick = true; scrollBottom();
     if(!settings.apiKey && !settingsPrompted){ settingsPrompted = true; setTimeout(openSettings, 350); }
@@ -1419,7 +1428,12 @@ import { initStorageUI } from "./ui/storage.js";
         if(activeScene && activeScene.id === rec.id) activeScene = rec;
         if(outlineShown()) refreshSidebarSoon();
       } });
-    storageUI = initStorageUI({ $: $, store: store, toast: toast, requestPersistence: requestPersistence,
+    // Meta reads and writes go through main's queue so they cannot race the lastRoute saves.
+    var metaStore = {
+      getMeta: function(){ return metaQueue.then(function(){ return store.getMeta(); }); },
+      setMeta: setMeta
+    };
+    storageUI = initStorageUI({ $: $, store: metaStore, toast: toast, requestPersistence: requestPersistence,
       exportProject: exportProject, now: Date.now,
       env: { ios: isIOS(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
              standalone: isStandalone(navigator, window.matchMedia.bind(window)) } });

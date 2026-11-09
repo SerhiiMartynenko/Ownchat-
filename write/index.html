@@ -52,7 +52,7 @@
     padding:calc(env(safe-area-inset-top) + 8px) 12px 8px;
     background:rgba(14,16,20,.72);backdrop-filter:saturate(160%) blur(18px);-webkit-backdrop-filter:saturate(160%) blur(18px);
     border-bottom:1px solid var(--border-soft);z-index:5}
-  .hbtn{flex:none;width:38px;height:38px;border-radius:11px;display:grid;place-items:center;color:var(--dim);transition:background .15s,color .15s}
+  .hbtn{position:relative;flex:none;width:38px;height:38px;border-radius:11px;display:grid;place-items:center;color:var(--dim);transition:background .15s,color .15s}
   .hbtn:active{background:var(--surface-2);color:var(--text)}
   .title-wrap{flex:1;display:flex;align-items:center;gap:10px;min-width:0;padding:0 4px}
   [data-views][hidden]{display:none !important}
@@ -92,6 +92,7 @@
   .chapter-title{flex:1;min-width:0;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .chapter-meta{flex:none;font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
   .scene-summary{font-size:13px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .scene-summary.stale{color:var(--accent-2)}
   .add-scene{display:block;width:100%;min-height:44px;margin-top:8px;border-style:dashed}
   #outlineAddChapter{margin:8px 0 0;text-align:center;min-height:48px}
   #viewScene{background:var(--bg)}
@@ -141,7 +142,8 @@
   .ins{background:var(--ins-bg);color:var(--ins);border-radius:3px}
   .del{background:var(--del-bg);color:var(--del);text-decoration:line-through;border-radius:3px}
   #previewOverlay{z-index:44}
-  #versionsOverlay{z-index:40}
+  #versionsOverlay,#summaryOverlay{z-index:40}
+  #summaryText{min-height:140px;font-size:16px;resize:vertical}
   #previewMeta{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 2px 10px;min-height:32px}
   #previewStats{font-size:12.5px;color:var(--faint);font-variant-numeric:tabular-nums}
   #previewDiffToggle{flex:none;padding:6px 12px;border-radius:9px;font-size:12.5px;font-weight:600}
@@ -261,6 +263,9 @@
   .fab{position:absolute;right:14px;bottom:84px;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--surface-2);border:1px solid var(--border);color:var(--dim);box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transform:translateY(8px) scale(.9);pointer-events:none;transition:.2s}
   .fab.show{opacity:1;transform:none;pointer-events:auto}
 
+  .chat-scope{flex:none;width:calc(100% - 24px);max-width:var(--maxw);margin:8px auto 0}
+  .chat-scope[hidden]{display:none}
+  .chat-scope button{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #empty{position:absolute;inset:0 0 70px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:8px;pointer-events:none}
   #empty .ehero{width:62px;height:62px;border-radius:18px;display:grid;place-items:center;margin-bottom:6px;background:linear-gradient(150deg,#2a2018,#16191f);box-shadow:inset 0 0 0 1px #38404d}
   #empty .ehero b{font-size:30px;color:var(--accent);font-weight:800}
@@ -310,9 +315,17 @@
   .card-row{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:6px 6px 6px 10px;border-radius:12px;text-align:left;background:var(--surface);border:1px solid var(--border);margin-top:6px;color:var(--text)}
   .card-row:active{background:var(--surface-2)}
   .card-type{flex:none;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);background:var(--surface-2);border-radius:7px;padding:3px 7px}
-  .card-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .card-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
   .card-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .card-aliases{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-row{cursor:pointer}
+  .card-group.proposed .card-group-title{color:var(--accent-2)}
+  .card-row.proposed{border-style:dashed;border-color:var(--accent)}
+  .card-source{display:block;font-size:11.5px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-acts{display:flex;gap:6px;flex:none}
+  .card-act{padding:6px 10px;border-radius:9px;font-size:12.5px;font-weight:600;border:1px solid var(--border);background:transparent;color:var(--dim)}
+  .card-act.accept{color:var(--accent-2);border-color:var(--accent)}
+  #openBible.has-proposed::after{content:"";position:absolute;top:7px;right:7px;width:7px;height:7px;border-radius:50%;background:var(--accent)}
   .card-pin{flex:none;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--faint)}
   .card-pin .ic{width:17px;height:17px}
   .card-pin.on{color:var(--accent);background:rgba(255,255,255,.04)}
@@ -421,11 +434,12 @@
     </section>
 
     <section class="view" id="viewChat">
+    <div id="chatScope" class="seg chat-scope" hidden><button type="button" data-v="scene" id="chatScopeScene">Scene</button><button type="button" data-v="project" id="chatScopeProject">Project</button></div>
     <div id="scroll">
       <div id="list"></div>
       <div id="empty">
         <div class="ehero"><b>W</b></div>
-        <h1>Project chat</h1>
+        <h1 id="emptyTitle">Project chat</h1>
         <p>Talk to Grok, Claude and other OpenRouter models with your own key. Your key and history stay on this device.</p>
         <div class="chips" id="starters"></div>
         <button class="ebtn" id="emptyKey">Add API key</button>
@@ -603,6 +617,21 @@
     <p id="versionsEmpty" class="muted" hidden>No versions yet. Accepting an AI change or choosing Save version adds one.</p>
     <div class="sheet-actions">
       <button id="versionsClose" class="btn-secondary" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scene summary sheet -->
+<div class="overlay" id="summaryOverlay">
+  <div class="sheet" role="dialog" aria-label="Scene summary">
+    <div class="grip"></div>
+    <h2 id="summaryTitle">Scene summary</h2>
+    <p class="hint" id="summaryStatus"></p>
+    <textarea id="summaryText" rows="7" placeholder="No summary yet. Regenerate, or write one."></textarea>
+    <p class="hint">Used as the story so far for later scenes and for the project chat.</p>
+    <div class="sheet-actions">
+      <button type="button" class="btn-secondary" id="summaryRegenerate">Regenerate</button>
+      <button type="button" class="btn-primary" id="summaryDone">Done</button>
     </div>
   </div>
 </div>

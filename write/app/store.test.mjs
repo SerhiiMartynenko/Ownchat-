@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { memoryHandle } from "./db.js";
-import { createStore, emptyThread, normalizeThread, sceneThreadId, MAX_VERSIONS_PER_SCENE } from "./store.js";
+import { createStore, emptyThread, normalizeThread, sceneThreadId, sceneTextHash, validStats, MAX_VERSIONS_PER_SCENE } from "./store.js";
 import { hashText } from "./util.js";
 import { blocksToText } from "./scene.js";
 
@@ -482,7 +482,7 @@ test("saveSceneWithVersion writes everything in one batch", async () => {
   await store.saveScene({ id: a.id, blocks: blk("now"), wordCount: 1 });
   const res = await spied.saveSceneWithVersion({ id: a.id, blocks: blk("next"), wordCount: 1 }, { reason: "expand" });
   assert.equal(batches, 1);
-  assert.deepEqual(lastOps.map((o) => o.type + ":" + o.store), ["put:versions", "put:scenes", "put:projects", "del:versions"]);
+  assert.deepEqual(lastOps.map((o) => o.type + ":" + o.store), ["put:versions", "put:scenes", "patch:projects", "del:versions"]);
   assert.equal(lastOps[0].value.id, res.version.id);
   const list = await store.listVersions(a.id);
   assert.equal(list.length, 30);
@@ -635,7 +635,8 @@ test("listSceneSummaries: outline order, stale flag, no blocks, orphans last", a
   assert.deepEqual(list.map((s) => s.stale), [false, false, true, false]);
   assert.ok(list.every((s) => !("blocks" in s)));
   assert.deepEqual(Object.keys(list[1]).sort(), ["chapterId", "chapterTitle", "id", "order", "stale", "summary",
-    "summaryHash", "summaryModel", "summaryUpdatedAt", "title", "wordCount"]);
+    "summaryHash", "summaryModel", "summaryUpdatedAt", "textHash", "title", "wordCount"]);
+  assert.equal(list[1].textHash, hashText(blocksToText(blocks)));
   assert.equal(list[1].chapterId, c1.id);
   assert.equal(list[1].summary, "fresh");
   assert.equal(list[1].wordCount, 2);
@@ -711,4 +712,213 @@ test("importProject: scene threads remapped in copy, kept in replace, optional",
   const plain = await store.importProject(data, { mode: "copy" });
   assert.equal((await store.getOutline(plain)).chapters.length, 2);
   assert.equal((await h.getAllBy("threads", "projectId", plain)).length, 1);
+});
+
+/* ----- Text hashes and project stats (long manuscripts) ----- */
+
+const hashOf = (blocks) => hashText(blocksToText(blocks));
+
+test("memory handle: count and patch ops in a batch, all or nothing", async () => {
+  const h = memoryHandle();
+  await h.batch([
+    { type: "put", store: "scenes", value: { id: "s1", projectId: "p", n: 1 } },
+    { type: "put", store: "scenes", value: { id: "s2", projectId: "p", n: 2 } },
+    { type: "put", store: "scenes", value: { id: "s3", projectId: "q", n: 3 } }
+  ]);
+  assert.equal(await h.count("scenes", "projectId", "p"), 2);
+  assert.equal(await h.count("scenes", "projectId", "none"), 0);
+  await h.batch([
+    { type: "patch", store: "scenes", id: "s1", fn: (r) => ({ ...r, n: r.n + 10 }) },
+    { type: "patch", store: "scenes", id: "s1", fn: (r) => ({ ...r, n: r.n * 2 }) },
+    { type: "patch", store: "scenes", id: "missing", fn: () => { throw new Error("not called"); } },
+    { type: "patch", store: "scenes", id: "s2", fn: () => null }
+  ]);
+  assert.equal((await h.get("scenes", "s1")).n, 22);
+  assert.equal((await h.get("scenes", "s2")).n, 2);
+  assert.equal(await h.get("scenes", "missing"), undefined);
+  await assert.rejects(h.batch([
+    { type: "del", store: "scenes", id: "s3" },
+    { type: "patch", store: "scenes", id: "s1", fn: () => { throw new Error("boom"); } }
+  ]), /boom/);
+  assert.ok(await h.get("scenes", "s3"), "a failed batch leaves nothing behind");
+  assert.equal((await h.get("scenes", "s1")).n, 22);
+});
+
+test("textHash is written whenever blocks are saved and left alone by patchScene", async () => {
+  const { h, store } = setup();
+  const { p, a, b } = await book(store);
+  assert.equal(a.textHash, hashText(""));
+  const b1 = blk("One two.\n\nThree.");
+  const s1 = await store.saveScene({ id: a.id, blocks: b1, wordCount: 3, textHash: "bogus" });
+  assert.equal(s1.textHash, hashOf(b1));
+  assert.equal((await h.get("scenes", a.id)).textHash, hashOf(b1));
+  const title = await store.saveScene({ id: a.id, title: "Renamed" });
+  assert.equal(title.textHash, hashOf(b1));
+  await store.patchScene(a.id, { summary: "S", summaryHash: hashOf(b1), textHash: "ignored" });
+  assert.equal((await h.get("scenes", a.id)).textHash, hashOf(b1));
+  const b2 = blk("Four five six.");
+  const r = await store.saveSceneWithVersion({ id: a.id, blocks: b2 }, { reason: "rewrite" });
+  assert.equal(r.scene.textHash, hashOf(b2));
+  assert.equal((await h.get("scenes", a.id)).textHash, hashOf(b2));
+  await store.restoreVersion(r.version.id);
+  assert.equal((await h.get("scenes", a.id)).textHash, hashOf(b1));
+  // Import recomputes it from the imported blocks (a bundle's textHash is not trusted).
+  const data = await store.loadProjectData(p.id);
+  data.scenes.forEach((s) => { s.textHash = "deadbeef"; });
+  const nid = await store.importProject(data, { mode: "copy" });
+  const imported = await h.getAllBy("scenes", "projectId", nid);
+  assert.equal(imported.length, 3);
+  imported.forEach((s) => assert.equal(s.textHash, hashOf(s.blocks)));
+  // Older records without the field read back as "".
+  await h.put("scenes", { id: "old", projectId: p.id, chapterId: b.chapterId, order: 9, title: "Old", blocks: blk("x") });
+  assert.equal((await store.getScene("old")).textHash, "");
+  assert.equal(sceneTextHash(await store.getScene("old")), hashOf(blk("x")));
+  assert.equal(sceneTextHash({ textHash: "abc", blocks: blk("x") }), "abc");
+});
+
+test("listSceneSummaries and getOutline use textHash, falling back to hashing old records", async () => {
+  const { h, store } = setup();
+  const { p, a, b, c } = await book(store);
+  const text = blk("Hello there");
+  await store.saveScene({ id: a.id, blocks: text, wordCount: 2 });
+  await store.patchScene(a.id, { summary: "fresh", summaryHash: hashOf(text) });
+  // b: stored textHash says the summary is current although the blocks differ, so no hashing happened.
+  const rb = await h.get("scenes", b.id);
+  await h.put("scenes", { ...rb, blocks: blk("Changed behind the store's back"), textHash: "cafe0001", summary: "s", summaryHash: "cafe0001" });
+  // c: an old record without textHash, summary written for other text.
+  const rc = await h.get("scenes", c.id);
+  delete rc.textHash;
+  await h.put("scenes", { ...rc, blocks: blk("Now"), summary: "old", summaryHash: hashOf(blk("Then")) });
+  const list = await store.listSceneSummaries(p.id);
+  const byId = Object.fromEntries(list.map((s) => [s.id, s]));
+  assert.deepEqual([byId[a.id].stale, byId[b.id].stale, byId[c.id].stale], [false, false, true]);
+  assert.equal(byId[c.id].textHash, hashOf(blk("Now")));
+  const o = await store.getOutline(p.id);
+  const sc = Object.fromEntries(o.chapters.flatMap((ch) => ch.scenes).map((s) => [s.id, s]));
+  assert.deepEqual([sc[a.id].stale, sc[b.id].stale, sc[c.id].stale], [false, false, true]);
+  assert.deepEqual([sc[a.id].textHash, sc[b.id].textHash, sc[c.id].textHash], [hashOf(text), "cafe0001", hashOf(blk("Now"))]);
+  assert.ok(Array.isArray(sc[a.id].blocks), "the outline still carries blocks");
+  // A whitespace-only summary is not stale in the outline; the derived flag is never stored.
+  await store.patchScene(a.id, { summary: "  ", summaryHash: "x" });
+  const o2 = await store.getOutline(p.id);
+  assert.equal(o2.chapters[0].scenes[0].stale, false);
+  await store.saveScene({ ...o2.chapters[0].scenes[0], title: "Kept" });
+  assert.ok(!("stale" in (await h.get("scenes", a.id))));
+});
+
+async function actualStats(h, pid){
+  const ch = await h.getAllBy("chapters", "projectId", pid);
+  const sc = await h.getAllBy("scenes", "projectId", pid);
+  return { chapters: ch.length, scenes: sc.length, words: sc.reduce((n, s) => n + s.wordCount, 0) };
+}
+
+test("project stats are kept on the project record through every change", async () => {
+  const { h, store } = setup();
+  const p0 = await store.createProject("Empty");
+  assert.deepEqual((await h.get("projects", p0.id)).stats, { chapters: 0, scenes: 0, words: 0 });
+  const { p, c1, c2, a, b, c } = await book(store);
+  const stored = async () => (await h.get("projects", p.id)).stats;
+  const check = async (label) => assert.deepEqual(await stored(), await actualStats(h, p.id), label);
+  assert.deepEqual(await stored(), { chapters: 2, scenes: 3, words: 0 });
+  await store.saveScene({ id: a.id, blocks: blk("one two three"), wordCount: 3 }); await check("save");
+  await store.saveScene({ id: b.id, blocks: blk("four five"), wordCount: 2 }); await check("save b");
+  await store.saveScene({ id: a.id, blocks: blk("one"), wordCount: 1 }); await check("shrink");
+  await store.saveScene({ id: a.id, title: "Only a title" }); await check("title only");
+  await store.saveSceneWithVersion({ id: c.id, blocks: blk("six seven eight nine") }, { reason: "r" }); await check("with version");
+  const r = await store.saveSceneWithVersion({ id: c.id, blocks: blk("ten"), wordCount: 1 }, { reason: "r" }); await check("with version 2");
+  await store.restoreVersion(r.version.id); await check("restore");
+  await store.patchScene(c.id, { summary: "S" }); await check("patch");
+  await store.moveScene(b.id, 1); await check("move across chapters");
+  await store.moveScene(b.id, -1); await check("move back");
+  await store.moveChapter(c2.id, -1); await check("move chapter");
+  const d = await store.addScene(c2.id, "D"); await check("add scene");
+  await store.saveScene({ id: d.id, blocks: blk("a b c d e"), wordCount: 5 }); await check("save d");
+  await store.deleteScene(a.id); await check("delete scene");
+  const c3 = await store.addChapter(p.id, "Three"); await check("add chapter");
+  await store.addScene(c3.id, "E"); await check("add e");
+  await store.deleteChapter(c2.id); await check("delete chapter with scenes");
+  await store.renameProject(p.id, "Renamed"); await check("rename");
+  await store.setLastScene(p.id, b.id); await check("last scene");
+  assert.deepEqual(await stored(), { chapters: 2, scenes: 2, words: 2 });
+  const list = await store.listProjects();
+  assert.deepEqual(list.find((x) => x.id === p.id).stats, await actualStats(h, p.id));
+  // Import writes stats for the copy.
+  const nid = await store.importProject(await store.loadProjectData(p.id), { mode: "copy" });
+  assert.deepEqual((await h.get("projects", nid)).stats, await actualStats(h, nid));
+  const rid = await store.importProject(await store.loadProjectData(nid), { mode: "replace" });
+  assert.equal(rid, nid);
+  assert.deepEqual((await h.get("projects", nid)).stats, await actualStats(h, nid));
+});
+
+test("concurrent saves of different scenes do not lose each other's word deltas", async () => {
+  const { h, store } = setup();
+  const { p, a, b, c } = await book(store);
+  await Promise.all([
+    store.saveScene({ id: a.id, blocks: blk("one two"), wordCount: 2 }),
+    store.saveSceneWithVersion({ id: b.id, blocks: blk("three four five") }, { reason: "r" }),
+    store.saveScene({ id: c.id, blocks: blk("six"), wordCount: 1 }),
+    store.setLastScene(p.id, c.id),
+    store.renameProject(p.id, "Busy")
+  ]);
+  const rec = await h.get("projects", p.id);
+  assert.deepEqual(rec.stats, { chapters: 2, scenes: 3, words: 6 });
+  assert.equal(rec.title, "Busy");
+  assert.equal(rec.lastSceneId, c.id);
+});
+
+test("listProjects reads stored stats without loading scenes when they are consistent", async () => {
+  const h = memoryHandle();
+  let n = 0, t = 1000;
+  const reads = [];
+  const spy = new Proxy(h, { get(target, key){
+    if(key === "getAll" || key === "getAllBy") return (st, ...rest) => { reads.push(key + ":" + st); return target[key](st, ...rest); };
+    return target[key];
+  } });
+  const store = createStore(spy, { uid: () => "id" + (++n), now: () => ++t });
+  const { a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("one two three"), wordCount: 3 });
+  reads.length = 0;
+  const list = await store.listProjects();
+  assert.deepEqual(list[0].stats, { chapters: 2, scenes: 3, words: 3 });
+  assert.deepEqual(reads, ["getAll:projects"]);
+});
+
+test("listProjects recomputes missing or inconsistent stats and saves them", async () => {
+  const { h, store } = setup();
+  const { p, c1, a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("one two three"), wordCount: 3 });
+  const rec = await h.get("projects", p.id);
+  const updatedAt = rec.updatedAt;
+  // Missing (a record from before stats existed).
+  delete rec.stats;
+  await h.put("projects", rec);
+  assert.deepEqual((await store.listProjects())[0].stats, { chapters: 2, scenes: 3, words: 3 });
+  let saved = await h.get("projects", p.id);
+  assert.deepEqual(saved.stats, { chapters: 2, scenes: 3, words: 3 });
+  assert.equal(saved.updatedAt, updatedAt, "recomputing does not touch updatedAt");
+  // Invalid values.
+  await h.put("projects", { ...saved, stats: { chapters: -1, scenes: "3", words: 3.5 } });
+  assert.equal(validStats((await h.get("projects", p.id)).stats), false);
+  assert.deepEqual((await store.listProjects())[0].stats, { chapters: 2, scenes: 3, words: 3 });
+  // Counts that do not match the records (a scene written behind the store's back).
+  await h.put("scenes", { id: "extra", projectId: p.id, chapterId: c1.id, order: 5, title: "X", blocks: blk("a b"), wordCount: 2 });
+  assert.deepEqual((await store.listProjects())[0].stats, { chapters: 2, scenes: 4, words: 5 });
+  assert.deepEqual((await h.get("projects", p.id)).stats, { chapters: 2, scenes: 4, words: 5 });
+  // Stats that are invalid stay invalid under deltas until recomputed.
+  await h.put("projects", { ...(await h.get("projects", p.id)), stats: null });
+  await store.saveScene({ id: a.id, blocks: blk("one"), wordCount: 1 });
+  assert.equal((await h.get("projects", p.id)).stats, null);
+  assert.deepEqual((await store.listProjects())[0].stats, { chapters: 2, scenes: 4, words: 3 });
+});
+
+test("getOutline heals word totals that drifted", async () => {
+  const { h, store } = setup();
+  const { p, a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("one two three"), wordCount: 3 });
+  await h.put("projects", { ...(await h.get("projects", p.id)), stats: { chapters: 2, scenes: 3, words: 999 } });
+  assert.equal((await store.listProjects())[0].stats.words, 999, "counts match, so the stored total is trusted");
+  const o = await store.getOutline(p.id);
+  assert.equal(o.project.stats.words, 3);
+  assert.deepEqual((await h.get("projects", p.id)).stats, { chapters: 2, scenes: 3, words: 3 });
+  assert.equal((await store.listProjects())[0].stats.words, 3);
 });

@@ -1,7 +1,11 @@
 // IndexedDB storage for the writing app.
 // Falls back to an in-memory map when IndexedDB is missing or fails to open.
-// The handle API is the same for both: get, put, del, getAll, getAllBy, patch, batch.
+// The handle API is the same for both: get, put, del, getAll, getAllBy, count, patch, batch.
 // patch(store, id, fn): read-modify-write in one transaction; null (no write) when id is missing.
+// count(store, index, value): number of records whose index equals value (no records are read).
+// batch(ops): ops are {type:"put", store, value}, {type:"del", store, id} or {type:"patch", store, id, fn};
+// a patch op reads the record inside the batch's transaction and puts fn(record); it is skipped when the
+// record is missing or fn returns null/undefined. All ops land in one transaction, in order.
 
 var DB_NAME = "ownchat-write";
 var DB_VERSION = 2;
@@ -31,6 +35,12 @@ export function memoryHandle(){
   function apply(op){
     if(op.type === "put") map(op.store).set(op.value.id, clone(op.value));
     else if(op.type === "del") map(op.store).delete(op.id);
+    else if(op.type === "patch"){
+      var cur = map(op.store).get(op.id);
+      if(cur === undefined) return;
+      var next = op.fn(clone(cur));
+      if(next != null) map(op.store).set(next.id, clone(next));
+    }
     else throw new Error("Unknown batch op: " + op.type);
   }
   return {
@@ -43,6 +53,11 @@ export function memoryHandle(){
       return Promise.resolve(Array.from(map(store).values())
         .filter(function(rec){ return rec && rec[index] === value; }).map(clone));
     },
+    count: function(store, index, value){
+      var n = 0;
+      map(store).forEach(function(rec){ if(rec && rec[index] === value) n++; });
+      return Promise.resolve(n);
+    },
     patch: function(store, id, fn){
       var cur = map(store).get(id);
       if(cur === undefined) return Promise.resolve(null);
@@ -51,7 +66,11 @@ export function memoryHandle(){
       return Promise.resolve(clone(next));
     },
     batch: function(ops){
-      try{ (ops || []).forEach(apply); }catch(e){ return Promise.reject(e); }
+      // All or nothing, like an IndexedDB transaction: apply to copies, then swap them in.
+      var saved = {};
+      (ops || []).forEach(function(op){ if(op && op.store && !saved[op.store]) saved[op.store] = new Map(map(op.store)); });
+      try{ (ops || []).forEach(apply); }
+      catch(e){ Object.keys(saved).forEach(function(k){ maps[k] = saved[k]; }); return Promise.reject(e); }
       return Promise.resolve();
     }
   };
@@ -84,6 +103,9 @@ function idbHandle(db){
     getAllBy: function(store, index, value){
       return run(store, "readonly", function(s){ return s.index(index).getAll(value); });
     },
+    count: function(store, index, value){
+      return run(store, "readonly", function(s){ return s.index(index).count(value); });
+    },
     patch: function(store, id, fn){
       return new Promise(function(resolve, reject){
         var tx, out = null;
@@ -104,7 +126,7 @@ function idbHandle(db){
       ops = ops || [];
       if(!ops.length) return Promise.resolve();
       return new Promise(function(resolve, reject){
-        var names = [], tx;
+        var names = [], tx, failed = null;
         ops.forEach(function(op){ if(names.indexOf(op.store) < 0) names.push(op.store); });
         try{
           tx = db.transaction(names, "readwrite");
@@ -112,6 +134,14 @@ function idbHandle(db){
             var s = tx.objectStore(op.store);
             if(op.type === "put") s.put(op.value);
             else if(op.type === "del") s.delete(op.id);
+            else if(op.type === "patch"){
+              var r = s.get(op.id);
+              r.onsuccess = function(){
+                if(r.result === undefined) return;
+                try{ var next = op.fn(r.result); if(next != null) s.put(next); }
+                catch(e){ try{ tx.abort(); }catch(e2){} failed = e; }
+              };
+            }
             else throw new Error("Unknown batch op: " + op.type);
           });
         }catch(e){
@@ -119,8 +149,8 @@ function idbHandle(db){
           reject(e); return;
         }
         tx.oncomplete = function(){ resolve(); };
-        tx.onerror = function(){ reject(tx.error); };
-        tx.onabort = function(){ reject(tx.error || new Error("Transaction aborted")); };
+        tx.onerror = function(){ reject(failed || tx.error); };
+        tx.onabort = function(){ reject(failed || tx.error || new Error("Transaction aborted")); };
       });
     }
   };

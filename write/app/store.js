@@ -42,6 +42,37 @@ function arr(v){ return Array.isArray(v) ? v : []; }
 function byOrder(a, b){ return (a.order || 0) - (b.order || 0); }
 function put(store, value){ return { type: "put", store: store, value: value }; }
 function del(store, id){ return { type: "del", store: store, id: id }; }
+function patchOp(store, id, fn){ return { type: "patch", store: store, id: id, fn: fn }; }
+
+// Per-project totals kept on the project record so the library does not read every scene:
+// project.stats = { chapters, scenes, words }. Maintained by every change below (applied inside the
+// change's own transaction) and recomputed when missing or inconsistent (listProjects, getOutline).
+function emptyStats(){ return { chapters: 0, scenes: 0, words: 0 }; }
+function count(n){ return typeof n === "number" && isFinite(n) && n >= 0 && Math.floor(n) === n; }
+export function validStats(st){
+  return !!st && typeof st === "object" && count(st.chapters) && count(st.scenes) && count(st.words);
+}
+function sameStats(a, b){ return validStats(a) && a.chapters === b.chapters && a.scenes === b.scenes && a.words === b.words; }
+// Adds deltas to valid stats; invalid stats stay invalid (the next listProjects recomputes them).
+function bumpStats(p, d){
+  if(!validStats(p.stats)) return;
+  p.stats = { chapters: Math.max(0, p.stats.chapters + (d.chapters || 0)), scenes: Math.max(0, p.stats.scenes + (d.scenes || 0)),
+    words: Math.max(0, p.stats.words + (d.words || 0)) };
+}
+function statsOf(chapters, scenes){
+  var st = emptyStats();
+  st.chapters = chapters.length;
+  scenes.forEach(function(s){ st.scenes++; st.words += wordsOf(s); });
+  return st;
+}
+
+// Hash of a scene's text (blocksToText), stored as scene.textHash on every save of its blocks so the
+// outline and the story-so-far can tell stale summaries without hashing every scene. Older records
+// without it are hashed on the fly.
+export function sceneTextHash(s){
+  return s && typeof s.textHash === "string" && s.textHash ? s.textHash : hashText(blocksToText(normalizeBlocks(s && s.blocks)));
+}
+function withTextHash(s){ s.textHash = hashText(blocksToText(s.blocks)); return s; }
 
 function normalizeBlocks(blocks){
   return arr(blocks).filter(function(b){ return b && typeof b === "object"; })
@@ -57,6 +88,8 @@ function normalizeScene(raw){
   s.summaryUpdatedAt = Math.max(0, Number(s.summaryUpdatedAt) || 0);
   s.summaryModel = str(s.summaryModel);
   s.wordCount = Math.max(0, Number(s.wordCount) || 0);
+  s.textHash = str(s.textHash);
+  delete s.stale;     // derived by getOutline, never stored
   return s;
 }
 
@@ -129,7 +162,7 @@ export function createStore(handle, deps){
     var rawThread = await db.get("threads", "default");
     var pid = uid();
     var project = { id: pid, title: "My project", bibleId: "default", threadId: "default",
-      lastSceneId: null, createdAt: t, updatedAt: t };
+      lastSceneId: null, createdAt: t, updatedAt: t, stats: emptyStats() };
     var bible = normalizeBible(rawBible, opts.legacySystem);
     bible.id = "default";
     bible.projectId = pid;
@@ -142,18 +175,38 @@ export function createStore(handle, deps){
     return meta;
   }
 
+  function countBy(store, index, value){
+    if(typeof db.count === "function") return db.count(store, index, value);
+    return db.getAllBy(store, index, value).then(function(l){ return l.length; });
+  }
+
+  // Writes recomputed stats onto the project record (nothing else changes, updatedAt included).
+  function storeStats(pid, st){
+    return db.patch("projects", pid, function(p){ p.stats = st; return p; }).catch(function(){});
+  }
+
+  async function recomputeStats(pid){
+    var chapters = await db.getAllBy("chapters", "projectId", pid);
+    var scenes = await db.getAllBy("scenes", "projectId", pid);
+    var st = statsOf(chapters, scenes);
+    await storeStats(pid, st);
+    return st;
+  }
+
+  // Stored stats are trusted when their chapter and scene counts match the records (counted without
+  // reading them); otherwise, or when missing, they are recomputed from the project's records and saved.
+  async function statsFor(p){
+    if(validStats(p.stats)){
+      var n = await Promise.all([countBy("chapters", "projectId", p.id), countBy("scenes", "projectId", p.id)]);
+      if(n[0] === p.stats.chapters && n[1] === p.stats.scenes) return { chapters: n[0], scenes: n[1], words: p.stats.words };
+    }
+    return recomputeStats(p.id);
+  }
+
   async function listProjects(){
     var projects = await db.getAll("projects");
-    var chapters = await db.getAll("chapters");
-    var scenes = await db.getAll("scenes");
-    var stats = {};
-    projects.forEach(function(p){ stats[p.id] = { chapters: 0, scenes: 0, words: 0 }; });
-    chapters.forEach(function(c){ if(stats[c.projectId]) stats[c.projectId].chapters++; });
-    scenes.forEach(function(s){
-      var st = stats[s.projectId];
-      if(st){ st.scenes++; st.words += Number(s.wordCount) || 0; }
-    });
-    return projects.map(function(p){ return Object.assign({}, p, { stats: stats[p.id] }); })
+    var stats = await Promise.all(projects.map(statsFor));
+    return projects.map(function(p, i){ return Object.assign({}, p, { stats: stats[i] }); })
       .sort(function(a, b){ return (b.updatedAt || 0) - (a.updatedAt || 0); });
   }
 
@@ -163,7 +216,7 @@ export function createStore(handle, deps){
     var t = now(), pid = uid();
     while(await db.get("projects", pid)) pid = uid();
     var project = { id: pid, title: str(title).trim() || "Untitled project", bibleId: "b-" + pid,
-      threadId: "t-" + pid, lastSceneId: null, createdAt: t, updatedAt: t };
+      threadId: "t-" + pid, lastSceneId: null, createdAt: t, updatedAt: t, stats: emptyStats() };
     var bible = Object.assign(emptyBible(), { id: project.bibleId, projectId: pid });
     var thread = emptyThread(project.threadId, pid);
     await db.batch([put("projects", project), put("bible", bible), put("threads", thread)]);
@@ -171,12 +224,12 @@ export function createStore(handle, deps){
   }
 
   async function renameProject(id, title){
-    var p = await db.get("projects", id);
-    if(!p) return null;
-    p.title = str(title).trim() || p.title;
-    p.updatedAt = now();
-    await db.put("projects", p);
-    return p;
+    var t = now();
+    return db.patch("projects", id, function(p){
+      p.title = str(title).trim() || p.title;
+      p.updatedAt = t;
+      return p;
+    });
   }
 
   async function sceneDeleteOps(scenes){
@@ -221,23 +274,33 @@ export function createStore(handle, deps){
   async function chaptersOf(pid){ return (await db.getAllBy("chapters", "projectId", pid)).sort(byOrder); }
   async function scenesOf(chapterId){ return (await db.getAllBy("scenes", "chapterId", chapterId)).sort(byOrder); }
 
+  // Scenes carry textHash (filled in for older records) and stale: a summary exists and was written
+  // for other text. The loaded records also heal the project's stored stats when they drifted.
   async function getOutline(pid){
     var project = await db.get("projects", pid);
     if(!project) return null;
     var chapters = await chaptersOf(pid);
     var scenes = await db.getAllBy("scenes", "projectId", pid);
+    scenes.forEach(function(s){
+      s.textHash = sceneTextHash(s);
+      s.stale = !!str(s.summary).trim() && s.textHash !== str(s.summaryHash);
+    });
+    var st = statsOf(chapters, scenes);
+    if(!sameStats(project.stats, st)){ project.stats = st; await storeStats(pid, st); }
     return { project: project, chapters: chapters.map(function(c){
       return Object.assign({}, c, { scenes: scenes.filter(function(s){ return s.chapterId === c.id; }).sort(byOrder) });
     }) };
   }
 
-  // Adds a put for the project with a fresh updatedAt.
-  async function touchOps(pid, t, mutate){
-    var p = await db.get("projects", pid);
-    if(!p) return [];
-    if(mutate) mutate(p);
-    p.updatedAt = t;
-    return [put("projects", p)];
+  // The project update of a change: a patch op (applied inside the change's transaction, so concurrent
+  // changes cannot overwrite each other's stats) with a fresh updatedAt, optional stat deltas and mutate.
+  async function touchOps(pid, t, mutate, delta){
+    return [patchOp("projects", pid, function(p){
+      if(mutate) mutate(p);
+      if(delta) bumpStats(p, delta);
+      p.updatedAt = t;
+      return p;
+    })];
   }
 
   // Renumber a sorted sibling list densely; returns puts for changed records.
@@ -253,7 +316,7 @@ export function createStore(handle, deps){
     var siblings = await chaptersOf(pid);
     var ch = { id: uid(), projectId: pid, order: siblings.length,
       title: str(title).trim() || "Chapter " + (siblings.length + 1), createdAt: t, updatedAt: t };
-    await db.batch([put("chapters", ch)].concat(await touchOps(pid, t)));
+    await db.batch([put("chapters", ch)].concat(await touchOps(pid, t, null, { chapters: 1 })));
     return ch;
   }
 
@@ -277,9 +340,10 @@ export function createStore(handle, deps){
     var rest = (await chaptersOf(ch.projectId)).filter(function(c){ return c.id !== id; });
     ops = ops.concat(renumber("chapters", rest));
     var ids = scenes.map(function(s){ return s.id; });
+    var words = scenes.reduce(function(a, s){ return a + wordsOf(s); }, 0);
     ops = ops.concat(await touchOps(ch.projectId, t, function(p){
       if(p.lastSceneId && ids.indexOf(p.lastSceneId) >= 0) p.lastSceneId = null;
-    }));
+    }, { chapters: -1, scenes: -scenes.length, words: -words }));
     await db.batch(ops);
     return true;
   }
@@ -305,8 +369,8 @@ export function createStore(handle, deps){
     var siblings = await scenesOf(chapterId);
     var sc = { id: uid(), projectId: ch.projectId, chapterId: chapterId, order: siblings.length,
       title: str(title).trim() || "Scene " + (siblings.length + 1), blocks: [], summary: "", summaryHash: "",
-      summaryUpdatedAt: 0, summaryModel: "", wordCount: 0, createdAt: t, updatedAt: t };
-    await db.batch([put("scenes", sc)].concat(await touchOps(ch.projectId, t)));
+      summaryUpdatedAt: 0, summaryModel: "", wordCount: 0, textHash: hashText(""), createdAt: t, updatedAt: t };
+    await db.batch([put("scenes", sc)].concat(await touchOps(ch.projectId, t, null, { scenes: 1 })));
     return sc;
   }
 
@@ -329,7 +393,7 @@ export function createStore(handle, deps){
     ops = ops.concat(renumber("scenes", rest));
     ops = ops.concat(await touchOps(sc.projectId, t, function(p){
       if(p.lastSceneId === id) p.lastSceneId = null;
-    }));
+    }, { scenes: -1, words: -wordsOf(sc) }));
     await db.batch(ops);
     return true;
   }
@@ -377,10 +441,10 @@ export function createStore(handle, deps){
     var cur = await db.get("scenes", scene.id);
     if(!cur) return null;
     var t = now();
-    var next = normalizeScene(Object.assign({}, cur, scene, {
+    var next = withTextHash(normalizeScene(Object.assign({}, cur, scene, {
       id: cur.id, projectId: cur.projectId, chapterId: cur.chapterId, order: cur.order,
-      createdAt: cur.createdAt, updatedAt: t }));
-    await db.batch([put("scenes", next)].concat(await touchOps(cur.projectId, t)));
+      createdAt: cur.createdAt, updatedAt: t })));
+    await db.batch([put("scenes", next)].concat(await touchOps(cur.projectId, t, null, { words: next.wordCount - wordsOf(cur) })));
     return next;
   }
 
@@ -422,7 +486,7 @@ export function createStore(handle, deps){
       return { id: s.id, chapterId: s.chapterId, chapterTitle: titles[s.chapterId] || "", order: s.order,
         title: s.title, summary: s.summary, summaryHash: s.summaryHash, summaryUpdatedAt: s.summaryUpdatedAt,
         summaryModel: s.summaryModel, wordCount: s.wordCount,
-        stale: s.summary ? hashText(blocksToText(s.blocks)) !== s.summaryHash : false };
+        textHash: sceneTextHash(s), stale: s.summary ? sceneTextHash(s) !== s.summaryHash : false };
     });
   }
 
@@ -480,9 +544,9 @@ export function createStore(handle, deps){
       id: cur.id, projectId: cur.projectId, chapterId: cur.chapterId, order: cur.order,
       createdAt: cur.createdAt, updatedAt: t });
     if(scene.wordCount == null) merged.wordCount = countWords(blocksToText(normalizeBlocks(merged.blocks)));
-    var next = normalizeScene(merged);
+    var next = withTextHash(normalizeScene(merged));
     var ops = (snap.version ? [snap.ops[0]] : []).concat([put("scenes", next)],
-      await touchOps(cur.projectId, t), snap.version ? snap.ops.slice(1) : snap.ops);
+      await touchOps(cur.projectId, t, null, { words: next.wordCount - wordsOf(cur) }), snap.version ? snap.ops.slice(1) : snap.ops);
     await db.batch(ops);
     return { scene: next, version: snap.version };
   }
@@ -532,11 +596,7 @@ export function createStore(handle, deps){
   }
 
   async function setLastScene(pid, sid){
-    var p = await db.get("projects", pid);
-    if(!p) return null;
-    p.lastSceneId = sid || null;
-    await db.put("projects", p);
-    return p;
+    return db.patch("projects", pid, function(p){ p.lastSceneId = sid || null; return p; });
   }
 
   // Everything a bundle needs: { project, bible, thread, chapters, scenes, sceneThreads } sorted by
@@ -593,8 +653,8 @@ export function createStore(handle, deps){
       perChapter[cid].sort(byOrder).forEach(function(s, i){
         var id = keep && s.id ? str(s.id) : uid();
         if(s.id != null) sceneIds[str(s.id)] = id;
-        scenes.push(normalizeScene(Object.assign({}, s, { id: id, projectId: pid, chapterId: cid, order: i,
-          createdAt: Number(s.createdAt) || t, updatedAt: Number(s.updatedAt) || t })));
+        scenes.push(withTextHash(normalizeScene(Object.assign({}, s, { id: id, projectId: pid, chapterId: cid, order: i,
+          createdAt: Number(s.createdAt) || t, updatedAt: Number(s.updatedAt) || t }))));
       });
     });
     var title = str(src.title).trim() || "Imported project";
@@ -603,7 +663,7 @@ export function createStore(handle, deps){
     var threadId = keep ? str(src.threadId || (data.thread && data.thread.id)) || "t-" + pid : "t-" + pid;
     var project = Object.assign({}, src, { id: pid, title: title, bibleId: bibleId, threadId: threadId,
       lastSceneId: sceneIds[str(src.lastSceneId)] || null,
-      createdAt: Number(src.createdAt) || t, updatedAt: t });
+      createdAt: Number(src.createdAt) || t, updatedAt: t, stats: statsOf(chapters, scenes) });
     var bible = normalizeBible(data.bible && typeof data.bible === "object" ? data.bible : {});
     bible.id = bibleId;
     bible.projectId = pid;

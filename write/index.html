@@ -170,7 +170,7 @@
 
   .overlay{position:fixed;inset:0;z-index:40;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .25s}
   .overlay.open{opacity:1;pointer-events:auto}
-  .sheet{width:100%;max-width:560px;max-height:90vh;overflow-y:auto;-webkit-overflow-scrolling:touch;background:var(--bg-2);border:1px solid var(--border);border-bottom:none;border-radius:22px 22px 0 0;padding:8px 18px calc(env(safe-area-inset-bottom) + 20px);transform:translateY(18px);transition:transform .28s cubic-bezier(.22,1,.36,1)}
+  .sheet{width:100%;max-width:560px;max-height:90vh;max-height:calc(var(--vvh, 100vh) * .9);overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;background:var(--bg-2);border:1px solid var(--border);border-bottom:none;border-radius:22px 22px 0 0;padding:8px 18px calc(env(safe-area-inset-bottom) + 20px);transform:translateY(18px);transition:transform .28s cubic-bezier(.22,1,.36,1)}
   .overlay.open .sheet{transform:none}
   .grip{width:38px;height:5px;border-radius:3px;background:var(--surface-3);margin:8px auto 6px}
   .sheet h2{font-size:18px;font-weight:700;letter-spacing:-.01em;margin:6px 2px 16px}
@@ -195,6 +195,36 @@
   .btn-primary{background:var(--accent);color:#1a1206}
   .btn-secondary{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}
 
+  .btn-secondary.danger{color:var(--danger);border-color:var(--danger)}
+  .btn-block{display:block;width:100%;text-align:left;padding:12px 14px;margin-top:16px;line-height:1.4;white-space:normal}
+  .sub-row{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;margin-top:26px}
+  .sub-row .sheet-sub{margin:0;border-top:none;padding-top:0;flex:1}
+  .sub-row .ghost-btn{height:36px}
+  #cardOverlay{z-index:45}
+  #bibleCards{margin-top:8px}
+  .card-group{margin-top:10px}
+  .card-group-title{font-size:12px;font-weight:700;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;margin:12px 2px 4px}
+  .card-row{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:6px 6px 6px 10px;border-radius:12px;text-align:left;background:var(--surface);border:1px solid var(--border);margin-top:6px;color:var(--text)}
+  .card-row:active{background:var(--surface-2)}
+  .card-type{flex:none;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);background:var(--surface-2);border-radius:7px;padding:3px 7px}
+  .card-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .card-name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-aliases{font-size:12px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .card-pin{flex:none;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--faint)}
+  .card-pin .ic{width:17px;height:17px}
+  .card-pin.on{color:var(--accent);background:rgba(255,255,255,.04)}
+  .ctx-meter{display:block;width:100%;max-width:var(--maxw);margin:0 auto;padding:0 6px 6px;text-align:left;background:none;border:none;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .ctx-meter[hidden]{display:none}
+  .ctx-meter .warn{color:var(--accent)}
+  .ctx-meter .err{color:var(--danger)}
+  .layers{list-style:none;margin:0;padding:0}
+  .layer-row{display:grid;grid-template-columns:1fr auto;column-gap:12px;padding:10px 2px;border-bottom:1px solid var(--border-soft)}
+  .layer-label{font-size:14.5px;font-weight:600}
+  .layer-tokens{grid-column:2;grid-row:1;text-align:right;font-variant-numeric:tabular-nums;color:var(--dim);font-size:14px}
+  .layer-detail{grid-column:1 / -1;grid-row:2;font-size:12.5px;color:var(--faint);line-height:1.4;margin-top:2px;overflow-wrap:anywhere}
+  #ctxSummaryBox{margin-top:14px}
+  #ctxSummaryBox summary{font-size:13px;color:var(--dim);font-weight:600;padding:6px 2px}
+  .summary-pre{white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:13px;color:var(--dim);max-height:40vh;overflow:auto;background:var(--surface-2);border-radius:var(--r-sm);padding:10px;margin:6px 0 0}
   .reader{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;flex-direction:column;transform:translateY(100%);transition:transform .3s cubic-bezier(.22,1,.36,1)}
   .reader.open{transform:none}
   .reader-head{display:flex;align-items:center;gap:8px;padding:calc(env(safe-area-inset-top) + 10px) 12px 10px;border-bottom:1px solid var(--border-soft);background:rgba(14,16,20,.85);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
@@ -221,10 +251,13 @@
     <div class="title-wrap">
       <div class="monogram"><b>W</b></div>
       <div class="titles">
-        <div class="app-title">Ownchat</div>
+        <div class="app-title">Ownchat Write</div>
         <button class="model-pill" id="modelPill"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
       </div>
     </div>
+    <button id="openBible" class="hbtn" aria-label="Story bible" title="Story bible">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
+    </button>
     <button class="hbtn" id="openSettings" aria-label="Settings" title="Settings">
       <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -238,6 +271,7 @@
       <p>Talk to Grok, Claude and other OpenRouter models with your own key. Your key and history stay on this device.</p>
       <div class="chips" id="starters"></div>
       <button class="ebtn" id="emptyKey">Add API key</button>
+      <button class="ebtn" id="importLegacy" type="button" hidden>Import chat from Ownchat</button>
     </div>
     <button class="fab" id="fab" aria-label="Scroll to bottom">
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
@@ -245,6 +279,7 @@
   </div>
 
   <div class="composer">
+    <button id="ctxMeter" class="ctx-meter" type="button" hidden><span id="ctxMeterText"></span></button>
     <div class="attach-wrap" id="attachWrap" hidden></div>
     <div class="composer-row">
       <button class="cbtn" id="attachBtn" aria-label="Attach a .md or .txt file">
@@ -281,8 +316,11 @@
       <button type="button" data-v="high">High</button>
       <button type="button" data-v="max">Max</button>
     </div>
-    <label for="setSystem">System prompt (optional)</label>
-    <textarea id="setSystem" placeholder="e.g. You are a concise writing partner."></textarea>
+    <label>Utility model</label>
+    <input type="text" id="setUtility" placeholder="x-ai/grok-4.5" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <div id="utilityPresets" class="presets"></div>
+    <p class="hint">Used for background summaries. Reasoning is always off.</p>
+    <button id="setOpenBible" class="ghost-btn btn-block" type="button">System prompt moved to Story bible → Style guide</button>
     <h3 class="sheet-sub">Advanced</h3>
     <label for="setEndpoint">API endpoint (optional proxy)</label>
     <input type="url" id="setEndpoint" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
@@ -290,6 +328,78 @@
     <div class="sheet-actions">
       <button class="btn-secondary" id="setCancel" type="button">Cancel</button>
       <button class="btn-primary" id="setSave" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Story bible sheet -->
+<div class="overlay" id="bibleOverlay">
+  <div class="sheet" role="dialog" aria-label="Story bible">
+    <div class="grip"></div>
+    <h2>Story bible</h2>
+    <label for="bibleBrief">Brief</label>
+    <textarea id="bibleBrief" rows="3" placeholder="What you're writing and your current goal."></textarea>
+    <label for="bibleStyle">Style guide</label>
+    <textarea id="bibleStyle" rows="4"></textarea>
+    <p class="hint">Sent with every request: voice, tense, POV, things to avoid.</p>
+    <div class="sub-row">
+      <h3 class="sheet-sub">Cards</h3>
+      <button id="bibleAddCard" class="ghost-btn" type="button">+ Add card</button>
+    </div>
+    <div id="bibleCards"></div>
+    <p id="bibleEmpty" class="hint">No cards yet. Add characters, places and threads; a card is sent when its name or alias comes up, or always if pinned.</p>
+    <div class="sheet-actions">
+      <button id="bibleDone" class="btn-primary" type="button">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- Card editor sheet -->
+<div class="overlay" id="cardOverlay">
+  <div class="sheet" role="dialog" aria-label="Card">
+    <div class="grip"></div>
+    <h2 id="cardTitle">New card</h2>
+    <label>Type</label>
+    <div class="seg" id="cardType">
+      <button type="button" data-v="character">Character</button>
+      <button type="button" data-v="place">Place</button>
+      <button type="button" data-v="thread">Thread</button>
+      <button type="button" data-v="note">Note</button>
+    </div>
+    <label for="cardName">Name</label>
+    <input id="cardName" type="text" autocomplete="off">
+    <label for="cardAliases">Aliases</label>
+    <input id="cardAliases" type="text" autocomplete="off" placeholder="Comma separated, e.g. Liz, Lizzie">
+    <label for="cardBody">Details</label>
+    <textarea id="cardBody" rows="6"></textarea>
+    <label>Include</label>
+    <div class="seg" id="cardPin">
+      <button type="button" data-v="mention">Mention only</button>
+      <button type="button" data-v="always">Always include</button>
+    </div>
+    <div class="sheet-actions">
+      <button id="cardDelete" class="btn-secondary danger" type="button" hidden>Delete</button>
+      <button id="cardCancel" class="btn-secondary" type="button">Cancel</button>
+      <button id="cardSave" class="btn-primary" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Context breakdown sheet -->
+<div class="overlay" id="ctxOverlay">
+  <div class="sheet" role="dialog" aria-label="Context">
+    <div class="grip"></div>
+    <h2>Context</h2>
+    <ul id="ctxLayers" class="layers"></ul>
+    <p id="ctxTotal" class="hint"></p>
+    <p id="ctxUsage" class="hint">No request yet</p>
+    <details id="ctxSummaryBox">
+      <summary>Rolling summary</summary>
+      <pre id="ctxSummaryText" class="summary-pre"></pre>
+    </details>
+    <div class="sheet-actions">
+      <button id="ctxSummarize" class="btn-secondary" type="button">Summarize now</button>
+      <button id="ctxClose" class="btn-primary" type="button">Close</button>
     </div>
   </div>
 </div>

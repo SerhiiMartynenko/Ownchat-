@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assembleContext, CONTEXT_DEFAULTS } from "./context.js";
+import { assembleContext, CONTEXT_DEFAULTS, STORY_OMITTED_MARKER } from "./context.js";
 import { newCard, cardToText } from "./bible.js";
 import { estimateTokens } from "./util.js";
 
@@ -23,7 +23,7 @@ test("no system message when bible is empty; empty preview", () => {
   assert.deepEqual(r.messages, [{ role: "user", content: "hi" }]);
   const e = assembleContext({ model: "x", bible: bible({ styleGuide: "S" }), thread: thread([]) });
   assert.deepEqual(e.messages, [{ role: "system", content: "S" }]);
-  assert.equal(e.breakdown.layers[5].tokens, 0);
+  assert.equal(e.breakdown.layers[6].tokens, 0);
 });
 
 test("layer order and headings", () => {
@@ -37,10 +37,10 @@ test("layer order and headings", () => {
     iC = sys.indexOf("## Story bible\n### Liz"), iSum = sys.indexOf("## Earlier in this conversation (summary; those messages are not shown)\nSum");
   assert.ok(iS === 0 && iS < iB && iB < iC && iC < iSum, sys);
   assert.deepEqual(messages.slice(1), [{ role: "user", content: "q" }, { role: "assistant", content: "r" }, { role: "user", content: "about liz" }]);
-  assert.deepEqual(breakdown.layers.map(l => l.key), ["system", "cards", "scene", "summary", "recent", "current"]);
-  assert.equal(breakdown.layers[3].folded, 2);
-  assert.equal(breakdown.layers[4].count, 2);
-  assert.equal(breakdown.layers[4].droppedUnsummarized, 0);
+  assert.deepEqual(breakdown.layers.map(l => l.key), ["system", "cards", "story", "scene", "summary", "recent", "current"]);
+  assert.equal(breakdown.layers[4].folded, 2);
+  assert.equal(breakdown.layers[5].count, 2);
+  assert.equal(breakdown.layers[5].droppedUnsummarized, 0);
   assert.equal(breakdown.total, sumLayers(breakdown));
 });
 
@@ -92,7 +92,7 @@ test("oldest verbatim messages trimmed first, maxVerbatim respected", () => {
   const r = assembleContext({ model: "x", bible: bible(), thread: thread(msgs), options: { maxVerbatim: 5 } });
   // history ends with a9; the 5 newest are a7,u8,a8,u9,a9 and the leading a7 is dropped
   assert.deepEqual(r.messages.map(m => m.content), ["user 8", "assistant 8", "user 9", "assistant 9", "now"]);
-  assert.equal(r.breakdown.layers[4].droppedUnsummarized, 20 - 4);
+  assert.equal(r.breakdown.layers[5].droppedUnsummarized, 20 - 4);
 
   const per = estimateTokens("user 9") + CONTEXT_DEFAULTS.msgOverhead; // all same size (3 tokens + 4)
   const cur = estimateTokens("now") + CONTEXT_DEFAULTS.msgOverhead;
@@ -116,8 +116,8 @@ test("brief, style and current never trimmed even when over budget", () => {
   assert.ok(r.messages[0].content.includes("Style text") && r.messages[0].content.includes("Brief text") && r.messages[0].content.includes("A summary"));
   assert.deepEqual(r.messages[1], { role: "user", content: "the current message is long enough" });
   assert.equal(r.breakdown.overBudget, true);
-  assert.equal(r.breakdown.layers[4].count, 0);
-  assert.equal(r.breakdown.layers[4].droppedUnsummarized, 2);
+  assert.equal(r.breakdown.layers[5].count, 0);
+  assert.equal(r.breakdown.layers[5].droppedUnsummarized, 2);
   assert.equal(r.breakdown.total, sumLayers(r.breakdown));
 });
 
@@ -143,7 +143,7 @@ test("breakdown layer sum equals total", () => {
   const r = assembleContext({ model: "x", bible: bible({ styleGuide: "S", brief: "B", cards }), thread: thread([u("Liz"), a("ok"), u("Привет")], { summary: "Sum" }) });
   assert.equal(r.breakdown.total, sumLayers(r.breakdown));
   assert.equal(r.breakdown.budget, CONTEXT_DEFAULTS.totalBudget);
-  assert.ok(r.breakdown.layers.every(l => l.key === "scene" ? l.tokens === 0 : l.tokens > 0));
+  assert.ok(r.breakdown.layers.every(l => l.key === "scene" || l.key === "story" ? l.tokens === 0 : l.tokens > 0));
 });
 
 test("summarizedUpTo omits folded messages and adds the summary layer", () => {
@@ -164,8 +164,8 @@ test("empty draft previews all messages as history with no current message", () 
   const msgs = [u("u1"), a("a1")];
   const r = assembleContext({ model: "x", bible: bible(), thread: thread(msgs), draft: "" });
   assert.deepEqual(r.messages, [{ role: "user", content: "u1" }, { role: "assistant", content: "a1" }]);
-  assert.equal(r.breakdown.layers[5].tokens, 0);
-  assert.equal(r.breakdown.layers[4].count, 2);
+  assert.equal(r.breakdown.layers[6].tokens, 0);
+  assert.equal(r.breakdown.layers[5].count, 2);
 });
 
 test("throws when the last message is not from the user and there is no draft", () => {
@@ -195,7 +195,7 @@ test("no scene: output identical to the pre-scene request (anthropic and others)
     const op = assembleContext({ model: "openai/m", ...richArgs(), scene });
     assert.equal(JSON.stringify(an.messages), JSON.stringify(expectedAnthropic));
     assert.equal(JSON.stringify(op.messages), JSON.stringify(expectedOther));
-    const L = op.breakdown.layers[2];
+    const L = op.breakdown.layers[3];
     assert.deepEqual(L, { key: "scene", label: "Current scene", tokens: 0, title: "", included: false, truncated: false, omittedTokens: 0 });
     assert.ok(!JSON.stringify(op.messages).includes(SCENE_HEAD));
     assert.equal(an.breakdown.cacheBreakpoints, 3);
@@ -207,8 +207,8 @@ test("scene layer sits after cards and before the summary (string system content
   const sys = r.messages[0].content;
   const iCards = sys.indexOf("## Story bible"), iScene = sys.indexOf(SCENE_HEAD + "The pier\nWaves.\n\nGulls."), iSum = sys.indexOf("## Earlier in this conversation");
   assert.ok(iCards > 0 && iCards < iScene && iScene < iSum, sys);
-  assert.deepEqual(r.breakdown.layers.map(l => l.key), ["system", "cards", "scene", "summary", "recent", "current"]);
-  const L = r.breakdown.layers[2];
+  assert.deepEqual(r.breakdown.layers.map(l => l.key), ["system", "cards", "story", "scene", "summary", "recent", "current"]);
+  const L = r.breakdown.layers[3];
   assert.equal(L.label, "Current scene");
   assert.equal(L.title, "The pier");
   assert.equal(L.included, true);
@@ -247,7 +247,7 @@ test("over-budget scene drops paragraphs from the start and keeps the end", () =
   const kept = sys.slice((SCENE_HEAD + "Long\n" + MARKER).length);
   assert.ok(text.endsWith(kept));
   assert.ok(kept.split("\n\n").every(p => paras.includes(p)), "only whole paragraphs kept");
-  const L = r.breakdown.layers[2];
+  const L = r.breakdown.layers[3];
   assert.equal(L.truncated, true);
   assert.ok(L.tokens <= budget);
   assert.equal(L.tokens, estimateTokens(sys));
@@ -266,7 +266,7 @@ test("tiny sceneBudget cuts characters from the start of the last paragraph", ()
   assert.ok(kept.length > 0 && kept.length < 200);
   assert.ok(text.endsWith(kept));
   assert.ok(!kept.includes("First"));
-  const L = r.breakdown.layers[2];
+  const L = r.breakdown.layers[3];
   assert.equal(L.truncated, true);
   assert.ok(L.tokens <= budget);
   assert.ok(L.omittedTokens > 0);
@@ -278,8 +278,8 @@ test("total budget trims recent messages, never the scene", () => {
   const r = assembleContext({ model: "x", bible: bible(), thread: thread(msgs), scene: { title: "T", text }, options: { totalBudget: 10 } });
   assert.equal(r.messages[0].content, SCENE_HEAD + "T\n" + text);
   assert.deepEqual(r.messages.slice(1), [{ role: "user", content: "now" }]);
-  assert.equal(r.breakdown.layers[2].truncated, false);
-  assert.equal(r.breakdown.layers[4].count, 0);
+  assert.equal(r.breakdown.layers[3].truncated, false);
+  assert.equal(r.breakdown.layers[5].count, 0);
   assert.equal(r.breakdown.overBudget, true);
 });
 
@@ -293,10 +293,98 @@ test("cards named only in the scene are matched", () => {
   assert.ok(sys.indexOf("### Marguerite") < sys.indexOf(SCENE_HEAD + "Dock"));
 });
 
-test("total equals the sum of the six layers with a scene", () => {
-  const r = assembleContext({ model: "anthropic/m", ...richArgs(), scene: { title: "Pier", text: "Liz walks. Привет." } });
-  assert.equal(r.breakdown.layers.length, 6);
+test("total equals the sum of the seven layers with a scene and story so far", () => {
+  const r = assembleContext({ model: "anthropic/m", ...richArgs(), scene: { title: "Pier", text: "Liz walks. Привет." },
+    storySoFar: [{ title: "Dock", chapterTitle: "One", summary: "They met." }] });
+  assert.equal(r.breakdown.layers.length, 7);
   assert.equal(r.breakdown.total, sumLayers(r.breakdown));
   assert.ok(r.breakdown.layers.every(l => l.tokens > 0));
   assert.equal(CONTEXT_DEFAULTS.sceneBudget, 8000);
+});
+
+// ---- Story-so-far layer ----
+
+const STORY_HEAD = "## Story so far\n";
+const sf = (title, chapterTitle, summary, stale) => ({ title, chapterTitle, summary, stale });
+
+test("no storySoFar: messages identical to before (anthropic and string)", () => {
+  const scene = { title: "Pier", text: "Waves." };
+  for (const model of ["anthropic/m", "openai/m"]) {
+    for (const extra of [{}, { scene }]) {
+      const base = assembleContext({ model, ...richArgs(), ...extra });
+      for (const storySoFar of [undefined, null, [], [sf("A", "One", "   ")]]) {
+        const r = assembleContext({ model, ...richArgs(), ...extra, storySoFar });
+        assert.equal(JSON.stringify(r.messages), JSON.stringify(base.messages));
+        assert.equal(r.breakdown.cacheBreakpoints, base.breakdown.cacheBreakpoints);
+        assert.deepEqual(r.breakdown.layers[2], { key: "story", label: "Story so far", tokens: 0, count: 0, dropped: 0, stale: 0 });
+      }
+    }
+  }
+  assert.equal(CONTEXT_DEFAULTS.storyBudget, 6000);
+});
+
+test("story so far sits after cards and before the scene; headings, chapter-less entry, stale suffix", () => {
+  const storySoFar = [sf("Arrival", "One", "Liz arrives."), sf("", "", "Night passes.", true), sf("Dock", "", "They meet."), sf("Gone", "Two", "")];
+  const r = assembleContext({ model: "x", ...richArgs(), scene: { title: "Pier", text: "Waves." }, storySoFar });
+  const sys = r.messages[0].content;
+  const expected = STORY_HEAD + "### One · Arrival\nLiz arrives.\n\n### Untitled (summary may be out of date)\nNight passes.\n\n### Dock\nThey meet.";
+  const iCards = sys.indexOf("## Story bible"), iSF = sys.indexOf(expected), iScene = sys.indexOf(SCENE_HEAD + "Pier"), iSum = sys.indexOf("## Earlier in this conversation");
+  assert.ok(iCards > 0 && iCards < iSF && iSF < iScene && iScene < iSum, sys);
+  assert.ok(sys.includes(expected + "\n\n" + SCENE_HEAD));
+  assert.ok(!sys.includes("Gone"));
+  const L = r.breakdown.layers[2];
+  assert.deepEqual(L, { key: "story", label: "Story so far", tokens: estimateTokens(expected), count: 3, dropped: 0, stale: 1 });
+});
+
+test("story budget drops earliest entries first with the marker and keeps the last entry", () => {
+  const storySoFar = Array.from({ length: 6 }, (_, i) => sf("S" + i, "", "Summary " + i + " " + "z".repeat(80), i === 5));
+  const entry = (i) => "### S" + i + (i === 5 ? " (summary may be out of date)" : "") + "\nSummary " + i + " " + "z".repeat(80);
+  const budget = estimateTokens(STORY_HEAD + STORY_OMITTED_MARKER + [3, 4, 5].map(entry).join("\n\n"));
+  const r = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), storySoFar, options: { storyBudget: budget } });
+  const text = STORY_HEAD + STORY_OMITTED_MARKER + [3, 4, 5].map(entry).join("\n\n");
+  assert.equal(r.messages[0].content, text);
+  assert.deepEqual(r.breakdown.layers[2], { key: "story", label: "Story so far", tokens: estimateTokens(text), count: 3, dropped: 3, stale: 1 });
+  // A tiny budget still keeps the whole last summary.
+  const t = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), storySoFar, options: { storyBudget: 1 } });
+  assert.equal(t.messages[0].content, STORY_HEAD + STORY_OMITTED_MARKER + entry(5));
+  assert.equal(t.breakdown.layers[2].count, 1);
+  assert.equal(t.breakdown.layers[2].dropped, 5);
+  assert.ok(t.breakdown.layers[2].tokens > 1);
+  // Within budget: no marker.
+  const w = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), storySoFar });
+  assert.ok(!w.messages[0].content.includes(STORY_OMITTED_MARKER));
+  assert.equal(w.breakdown.layers[2].dropped, 0);
+});
+
+test("anthropic with five layers: four parts, A and B share the first", () => {
+  const r = assembleContext({ model: "anthropic/m", ...richArgs(), scene: { title: "Pier", text: "Waves." }, storySoFar: [sf("Dock", "One", "They met.")] });
+  const parts = r.messages[0].content;
+  assert.equal(parts.length, 4);
+  assert.equal(parts[0].text, "## Style guide\nS\n\n## Brief\nB\n\n## Story bible\n### Pin (note)\n\n### Liz (note)\nRed coat.");
+  assert.equal(parts[1].text, STORY_HEAD + "### One · Dock\nThey met.");
+  assert.equal(parts[2].text, SCENE_HEAD + "Pier\nWaves.");
+  assert.ok(parts[3].text.startsWith("## Earlier in this conversation"));
+  for (const p of parts) assert.deepEqual(p.cache_control, { type: "ephemeral" });
+  assert.equal(r.breakdown.cacheBreakpoints, 4);
+  const op = assembleContext({ model: "openai/m", ...richArgs(), scene: { title: "Pier", text: "Waves." }, storySoFar: [sf("Dock", "One", "They met.")] });
+  assert.equal(op.messages[0].content, parts.map(p => p.text).join("\n\n"));
+});
+
+test("anthropic with four layers including the story: one part per layer", () => {
+  const r = assembleContext({ model: "anthropic/m", ...richArgs(), storySoFar: [sf("Dock", "One", "They met.")] });
+  const parts = r.messages[0].content;
+  assert.equal(parts.length, 4);
+  assert.equal(parts[0].text, "## Style guide\nS\n\n## Brief\nB");
+  assert.ok(parts[1].text.startsWith("## Story bible"));
+  assert.equal(parts[2].text, STORY_HEAD + "### One · Dock\nThey met.");
+  assert.ok(parts[3].text.startsWith("## Earlier in this conversation"));
+  assert.equal(r.breakdown.cacheBreakpoints, 4);
+});
+
+test("story-so-far content does not pull cards in", () => {
+  const cards = [newCard({ id: "1", name: "Marguerite" })];
+  const r = assembleContext({ model: "x", bible: bible({ cards }), thread: thread([u("what next?")]), storySoFar: [sf("Dock", "", "Marguerite waits.")] });
+  assert.deepEqual(r.breakdown.layers[1].cards, []);
+  assert.equal(r.breakdown.layers.length, 7);
+  assert.equal(r.breakdown.total, sumLayers(r.breakdown));
 });

@@ -160,6 +160,14 @@ test("draft mode uses all messages as history", () => {
   assert.deepEqual(r.messages, [{ role: "user", content: "u1" }, { role: "assistant", content: "a1" }, { role: "user", content: "draft text" }]);
 });
 
+test("empty draft previews all messages as history with no current message", () => {
+  const msgs = [u("u1"), a("a1")];
+  const r = assembleContext({ model: "x", bible: bible(), thread: thread(msgs), draft: "" });
+  assert.deepEqual(r.messages, [{ role: "user", content: "u1" }, { role: "assistant", content: "a1" }]);
+  assert.equal(r.breakdown.layers[4].tokens, 0);
+  assert.equal(r.breakdown.layers[3].count, 2);
+});
+
 test("throws when the last message is not from the user and there is no draft", () => {
   assert.throws(() => assembleContext({ model: "x", bible: bible(), thread: thread([u("u1"), a("a1")]) }), /last message must be from the user/);
 });

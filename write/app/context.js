@@ -22,8 +22,9 @@ export function assembleContext(args){
 
   // Current message and history.
   var current=null, history;
-  if(typeof draft==="string" && draft!==""){
-    current={ role:"user", content:draft };
+  if(typeof draft==="string"){
+    // Meter preview: every message is history; an empty draft means no current message.
+    current=draft!=="" ? { role:"user", content:draft } : null;
     history=all;
   } else if(all.length){
     var last=all[all.length-1];

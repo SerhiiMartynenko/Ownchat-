@@ -1,9 +1,11 @@
-// Assembles the request messages from the story bible, the rolling summary and recent messages.
+// Assembles the request messages from the story bible, the current scene, the rolling summary and recent messages.
 // Pure, no DOM.
 import { estimateTokens } from "./util.js";
 import { matchCards, cardToText } from "./bible.js";
 
-export const CONTEXT_DEFAULTS = { totalBudget:24000, cardBudget:6000, maxVerbatim:24, scanMessages:4, msgOverhead:4 };
+export const CONTEXT_DEFAULTS = { totalBudget:24000, cardBudget:6000, maxVerbatim:24, scanMessages:4, msgOverhead:4, sceneBudget:8000 };
+
+export const SCENE_OMITTED_MARKER="[… earlier part of this scene omitted]\n\n";
 
 function s(v){ return typeof v==="string" ? v : ""; }
 
@@ -15,9 +17,35 @@ function systemText(brief, style){
   return "";
 }
 
+// Layer S: the current scene. Over budget, whole paragraphs are dropped from the start, then characters from
+// the start of the last remaining paragraph, so the end of the scene (nearest the cursor) is kept.
+function sceneLayer(scene, budget){
+  if(!scene || typeof scene!=="object") return { text:"", title:"", included:false, truncated:false, omittedTokens:0 };
+  var title=s(scene.title).trim(), body=s(scene.text).trim();
+  var heading="## Current scene: "+(title || "Untitled");
+  var full=body ? heading+"\n"+body : heading;
+  if(estimateTokens(full)<=budget) return { text:full, title:title, included:true, truncated:false, omittedTokens:0 };
+  var prefix=heading+"\n"+SCENE_OMITTED_MARKER;
+  var paras=body.split("\n\n");
+  while(paras.length>1 && estimateTokens(prefix+paras.join("\n\n"))>budget) paras.shift();
+  var kept=paras.join("\n\n");
+  if(estimateTokens(prefix+kept)>budget){
+    // Cut code points from the start of the last paragraph: smallest cut that fits (estimate is monotonic).
+    var chars=Array.from(kept), lo=0, hi=chars.length;
+    while(lo<hi){
+      var mid=(lo+hi)>>1;
+      if(estimateTokens(prefix+chars.slice(mid).join(""))<=budget) hi=mid; else lo=mid+1;
+    }
+    kept=chars.slice(lo).join("");
+  }
+  var omitted=body.slice(0, body.length-kept.length);
+  return { text:prefix+kept, title:title, included:true, truncated:true, omittedTokens:estimateTokens(omitted) };
+}
+
 export function assembleContext(args){
   var model=s(args.model), bible=args.bible||{}, thread=args.thread||{}, draft=args.draft;
   var o=Object.assign({}, CONTEXT_DEFAULTS, args.options||{});
+  var S=sceneLayer(args.scene, o.sceneBudget);
   var all=Array.isArray(thread.messages) ? thread.messages : [];
 
   // Current message and history.
@@ -42,6 +70,7 @@ export function assembleContext(args){
 
   // Layer B: story bible cards.
   var scanParts=[current ? current.content : ""];
+  if(S.included) scanParts.unshift(s(args.scene.text));
   history.slice(Math.max(0, history.length-o.scanMessages)).forEach(function(m){ scanParts.push(s(m.content)); });
   var picked=matchCards(bible.cards||[], scanParts.join("\n")).map(function(m){
     return { m:m, tokens:estimateTokens(cardToText(m.card)) };
@@ -61,6 +90,8 @@ export function assembleContext(args){
   var textB=picked.length ? "## Story bible\n"+picked.map(function(p){ return cardToText(p.m.card); }).join("\n\n") : "";
   var tokB=estimateTokens(textB);
 
+  var tokS=estimateTokens(S.text);
+
   // Layer C: rolling summary.
   var summary=s(thread.summary).trim();
   var textC=summary ? "## Earlier in this conversation (summary; those messages are not shown)\n"+summary : "";
@@ -69,7 +100,7 @@ export function assembleContext(args){
   // Layer D: verbatim recent messages.
   var upTo=Math.max(0, Math.min(Number(thread.summarizedUpTo)||0, history.length));
   var unfolded=history.slice(upTo);
-  var fixed=tokA+tokB+tokC+curTokens;
+  var fixed=tokA+tokB+tokS+tokC+curTokens;
   var over=fixed>o.totalBudget;
   var remaining=o.totalBudget-fixed;
   var recent=[], tokD=0;
@@ -84,7 +115,7 @@ export function assembleContext(args){
   }
 
   // Output messages.
-  var layers=[textA, textB, textC].filter(Boolean);
+  var layers=[textA, textB, S.text, textC].filter(Boolean);
   var anthropic=/^anthropic\//i.test(model);
   var messages=[];
   if(layers.length){
@@ -101,6 +132,8 @@ export function assembleContext(args){
       { key:"cards", label:"Story bible", tokens:tokB,
         cards:picked.map(function(p){ return { id:p.m.card.id, name:p.m.card.name, reason:p.m.reason, tokens:p.tokens }; }),
         dropped:dropped, overBudget:cardsOver },
+      { key:"scene", label:"Current scene", tokens:tokS, title:S.title, included:S.included,
+        truncated:S.truncated, omittedTokens:S.omittedTokens },
       { key:"summary", label:"Summary", tokens:tokC, folded:upTo },
       { key:"recent", label:"Recent messages", tokens:tokD, count:recent.length, droppedUnsummarized:unfolded.length-recent.length },
       { key:"current", label:"Current message", tokens:curTokens }

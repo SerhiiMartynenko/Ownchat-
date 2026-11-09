@@ -1,6 +1,6 @@
 # Ownchat Writing Tool: Design
 
-Status: phases 1 to 4 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
+Status: phases 1 to 5 are implemented under `write/` (live at `/Ownchat-/write/`). Branch: `claude/ai-writing-tool-planning-fowkbw`.
 
 ## 1. Goal
 
@@ -132,7 +132,9 @@ scene note". The current scene is always in context for a scene thread.
 - **Settings**: API key, writing model, utility model, reasoning effort, proxy
   endpoint, storage status, export.
 
-Desktop: Outline, Scene and Chat/Bible side by side.
+Desktop (implemented in phase 5): from 1024px the outline is a sidebar beside the
+scene and chat views; from 1280px the scene chat opens beside the editor instead of
+replacing it; sheets become centered dialogs. The phone layout is unchanged.
 
 ## 10. Code layout (no build step)
 
@@ -167,7 +169,8 @@ modules unchanged.
 4. **Scoped chat and summaries.** Scene threads, chat as a sheet, scene
    summaries with story-so-far, proposed bible facts.
 5. **Polish.** Desktop layout, storage persistence prompts, performance on
-   long manuscripts, optional sync exploration.
+   long manuscripts, optional sync exploration. Implemented; sync is explored in
+   `docs/SYNC.md`.
 
 ## 13. Implementation policy
 
@@ -177,7 +180,7 @@ top-level session only briefs, reviews and verifies. Each phase ends with the
 app usable on the phone PWA and with `node --test` passing for any new
 pure-logic modules (context budgeting, diff, export/import).
 
-## Implementation notes (phases 1 to 4)
+## Implementation notes (phases 1 to 5)
 
 Deviations from the design above:
 
@@ -205,3 +208,25 @@ Deviations from the design above:
   become cards with `status:"proposed"` and a `source`; `matchCards` ignores them
   until accepted. The bundle stays at version 1: scene threads are added as
   `chat/scene-*.json` files listed under `sceneThreads` in the manifest.
+
+Phase 5:
+
+- Layout is driven by two media queries in `main.js` (1024px and 1280px) that set
+  `body[data-layout]` and re-run the current route when they change. A `split`
+  pseudo-view activates the scene and chat sections together. The phone layout is
+  unchanged. Escape closes the topmost open sheet.
+- Storage: Settings has a Storage section (status, used space, an iPhone install hint
+  and a Protect button). `navigator.storage.persist()` is still requested at boot;
+  the button repeats it explicitly. The library shows a notice when storage is not
+  protected and at least one project exists (snoozed 30 days), or a backup reminder
+  when a project of 500+ words changed and was not exported for 7 days (snoozed 7
+  days). Dismissals and export times are kept in the `meta/app` record under
+  `notices` and `exports`.
+- Performance: scenes store `textHash` on every save, and staleness checks use it
+  instead of hashing text. `project.stats` is maintained with deltas on save and
+  recomputed when it is inconsistent, so the library no longer loads every scene
+  (no schema bump; both caches heal themselves). Chat history renders in windows of
+  60 messages with a "Show earlier messages" button. `npm run perf` seeds a project
+  of about 115k words, applies a 4x CPU slowdown and times the main steps. Recorded
+  numbers: library open 12 ms, outline 80 to 90 ms, largest scene 21 ms, scene chat
+  52 to 74 ms, project chat 39 ms, export 525 ms, import 380 ms.

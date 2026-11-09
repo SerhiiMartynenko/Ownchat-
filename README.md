@@ -169,9 +169,19 @@ Features so far:
   manifest, lossless), and export of the manuscript as Markdown.
 - iOS: use "Save to Files" from the share sheet. Safari auto-unzips plain downloads,
   but a re-zipped folder still imports.
-- Data lives in IndexedDB on the device, so export regularly.
+- Desktop layout: from 1024px wide the outline is a sidebar beside the scene and
+  chat; from 1280px the scene chat opens next to the editor. Sheets become centered
+  dialogs. Escape closes the topmost sheet. The phone layout is unchanged.
+- Data lives in IndexedDB on the device, so export regularly. Settings has a Storage
+  section with the current status and a "Protect" button that asks the browser not to
+  clear the data (on iPhone, add the app to the Home Screen first).
+- Backup reminders: the library suggests protecting storage, and reminds you to export
+  when a project changed and was not exported for 7 days. "Later" snoozes a notice.
+- Long chats show the latest 60 messages; "Show earlier messages" reveals more.
+- Optional sync is explored in `docs/SYNC.md` (not implemented).
 
 Run all tests with `npm test` (or `node --test`).
 
-`npm run e2e` runs the browser end-to-end checks (needs Playwright + Chromium
-installed locally).
+`npm run e2e` runs the browser end-to-end checks for phases 1 to 5 (needs Playwright +
+Chromium installed locally). `npm run perf` times the main steps on a project of about
+115k words with a 4x CPU slowdown.

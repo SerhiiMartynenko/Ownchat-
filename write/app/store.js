@@ -2,6 +2,10 @@
 // Every multi-record change goes through handle.batch so it lands in one transaction.
 import { uid as defaultUid } from "./util.js";
 import { normalizeBible, emptyBible } from "./bible.js";
+import { blocksToText, countWords } from "./scene.js";
+
+// Per-scene cap on stored versions; older ones are pruned in the same batch that adds a new one.
+export const MAX_VERSIONS_PER_SCENE = 30;
 
 export function emptyThread(id, projectId){
   return { id: id || "default", projectId: projectId == null ? null : projectId,
@@ -35,15 +39,38 @@ function byOrder(a, b){ return (a.order || 0) - (b.order || 0); }
 function put(store, value){ return { type: "put", store: store, value: value }; }
 function del(store, id){ return { type: "del", store: store, id: id }; }
 
+function normalizeBlocks(blocks){
+  return arr(blocks).filter(function(b){ return b && typeof b === "object"; })
+    .map(function(b){ return { id: str(b.id), text: str(b.text) }; });
+}
+
 function normalizeScene(raw){
   var s = Object.assign({}, raw);
   s.title = str(s.title);
-  s.blocks = arr(s.blocks).filter(function(b){ return b && typeof b === "object"; })
-    .map(function(b){ return { id: str(b.id), text: str(b.text) }; });
+  s.blocks = normalizeBlocks(s.blocks);
   s.summary = str(s.summary);
   s.summaryHash = str(s.summaryHash);
   s.wordCount = Math.max(0, Number(s.wordCount) || 0);
   return s;
+}
+
+function normalizeVersion(raw){
+  var v = Object.assign({}, raw);
+  v.blocks = normalizeBlocks(v.blocks);
+  v.wordCount = wordsOf(v);
+  v.reason = str(v.reason);
+  v.createdAt = Number(v.createdAt) || 0;
+  return v;
+}
+
+// Newest first; ties broken by id (descending) so the order is stable.
+function byNewest(a, b){
+  return (b.createdAt - a.createdAt) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+}
+
+function wordsOf(rec){
+  var n = rec && rec.wordCount;
+  return typeof n === "number" && isFinite(n) ? Math.max(0, n) : countWords(blocksToText(rec && rec.blocks));
 }
 
 export function createStore(handle, deps){
@@ -347,6 +374,74 @@ export function createStore(handle, deps){
     return next;
   }
 
+  async function listVersions(sceneId){
+    return (await db.getAllBy("versions", "sceneId", sceneId)).map(normalizeVersion).sort(byNewest);
+  }
+
+  async function getVersion(id){
+    var v = await db.get("versions", id);
+    return v ? normalizeVersion(v) : v;
+  }
+
+  // Snapshot of the stored scene `cur` given its versions (newest first). Returns
+  // { version, ops }: version is null when the newest version already holds the same text, or
+  // when opts.skipEmpty and the scene has no blocks and no versions. ops = put of the version
+  // (if any) plus dels of the oldest versions beyond MAX_VERSIONS_PER_SCENE.
+  function snapshotOps(cur, existing, reason, t, opts){
+    var blocks = normalizeBlocks(cur.blocks);
+    var text = blocksToText(blocks);
+    var version = null;
+    var dup = existing.length > 0 && blocksToText(existing[0].blocks) === text;
+    var empty = opts && opts.skipEmpty && blocks.length === 0 && existing.length === 0;
+    if(!dup && !empty){
+      var id = uid();
+      while(existing.some(function(v){ return v.id === id; })) id = uid();
+      version = { id: id, sceneId: cur.id, projectId: cur.projectId, blocks: blocks,
+        wordCount: wordsOf(cur), reason: str(reason), createdAt: t };
+    }
+    var all = version ? [version].concat(existing) : existing;
+    var ops = version ? [put("versions", version)] : [];
+    all.slice(MAX_VERSIONS_PER_SCENE).reverse().forEach(function(v){ ops.push(del("versions", v.id)); });
+    return { version: version, ops: ops };
+  }
+
+  // Snapshots the stored scene as a version. Null for an unknown scene or a duplicate snapshot.
+  async function addVersion(sceneId, reason){
+    var cur = await db.get("scenes", sceneId);
+    if(!cur) return null;
+    var snap = snapshotOps(cur, await listVersions(sceneId), reason, now());
+    if(!snap.version) return null;
+    await db.batch(snap.ops);
+    return snap.version;
+  }
+
+  // saveScene plus a snapshot of the text it replaces, in one batch: [put version, put scene,
+  // put project, ...del pruned versions]. Returns { scene, version } (version null when skipped)
+  // or null when the scene no longer exists.
+  async function saveSceneWithVersion(scene, opts){
+    if(!scene || !scene.id) return null;
+    var cur = await db.get("scenes", scene.id);
+    if(!cur) return null;
+    var t = now();
+    var snap = snapshotOps(cur, await listVersions(cur.id), opts && opts.reason, t, { skipEmpty: true });
+    var merged = Object.assign({}, cur, scene, {
+      id: cur.id, projectId: cur.projectId, chapterId: cur.chapterId, order: cur.order,
+      createdAt: cur.createdAt, updatedAt: t });
+    if(scene.wordCount == null) merged.wordCount = countWords(blocksToText(normalizeBlocks(merged.blocks)));
+    var next = normalizeScene(merged);
+    var ops = (snap.version ? [snap.ops[0]] : []).concat([put("scenes", next)],
+      await touchOps(cur.projectId, t), snap.version ? snap.ops.slice(1) : snap.ops);
+    await db.batch(ops);
+    return { scene: next, version: snap.version };
+  }
+
+  // Puts a version's text back; the current text is snapshotted first (reason "restore").
+  async function restoreVersion(versionId){
+    var v = await getVersion(versionId);
+    if(!v) return null;
+    return saveSceneWithVersion({ id: v.sceneId, blocks: v.blocks, wordCount: wordsOf(v) }, { reason: "restore" });
+  }
+
   async function getBible(project){
     if(!project) return null;
     return bibleFor(project, await db.get("bible", project.bibleId));
@@ -463,6 +558,8 @@ export function createStore(handle, deps){
     deleteChapter: deleteChapter, moveChapter: moveChapter,
     addScene: addScene, renameScene: renameScene, deleteScene: deleteScene, moveScene: moveScene,
     getScene: getScene, saveScene: saveScene,
+    listVersions: listVersions, getVersion: getVersion, addVersion: addVersion,
+    saveSceneWithVersion: saveSceneWithVersion, restoreVersion: restoreVersion,
     getBible: getBible, saveBible: saveBible, getThread: getThread, saveThread: saveThread,
     setLastScene: setLastScene, loadProjectData: loadProjectData, importProject: importProject
   };

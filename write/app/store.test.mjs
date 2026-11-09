@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { memoryHandle } from "./db.js";
-import { createStore, emptyThread, normalizeThread } from "./store.js";
+import { createStore, emptyThread, normalizeThread, MAX_VERSIONS_PER_SCENE } from "./store.js";
 
 function setup(){
   const h = memoryHandle();
@@ -332,4 +332,186 @@ test("importProject replace keeps ids and removes stale records", async () => {
   data.project.bibleId = "b-fresh"; data.project.threadId = "t-fresh";
   assert.equal(await store.importProject(data, { mode: "replace" }), "fresh");
   assert.equal((await store.getProject("fresh")).title, "Book v2");
+});
+
+// ---- versions ----
+
+const blk = (...texts) => texts.map((t, i) => ({ id: "b" + i, text: t }));
+const texts = (blocks) => blocks.map((b) => b.text);
+
+test("saveSceneWithVersion snapshots the previous blocks with the reason", async () => {
+  const { h, store } = setup();
+  const { p, a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("One two.", "Three."), wordCount: 3 });
+  const before = (await store.getProject(p.id)).updatedAt;
+  const res = await store.saveSceneWithVersion({ id: a.id, projectId: "x", order: 9,
+    blocks: blk("New text here.") }, { reason: "rewrite" });
+  assert.deepEqual(texts(res.scene.blocks), ["New text here."]);
+  assert.equal(res.scene.wordCount, 3); // computed when missing
+  assert.equal(res.scene.projectId, p.id);
+  assert.equal(res.scene.order, 0);
+  assert.ok(res.scene.updatedAt > before);
+  const v = res.version;
+  assert.equal(v.sceneId, a.id);
+  assert.equal(v.projectId, p.id);
+  assert.equal(v.reason, "rewrite");
+  assert.equal(v.wordCount, 3);
+  assert.deepEqual(v.blocks, blk("One two.", "Three."));
+  assert.equal(v.createdAt, res.scene.updatedAt);
+  assert.deepEqual(await h.get("versions", v.id), v);
+  assert.deepEqual(await store.getVersion(v.id), v);
+  assert.equal((await store.getProject(p.id)).updatedAt, res.scene.updatedAt);
+  const got = await store.getScene(a.id);
+  assert.deepEqual(texts(got.blocks), ["New text here."]);
+  const kept = await store.saveSceneWithVersion({ id: a.id, blocks: blk("x"), wordCount: 7 }, { reason: "edit" });
+  assert.equal(kept.scene.wordCount, 7);
+  assert.equal(await store.saveSceneWithVersion({ id: "gone", blocks: [] }, { reason: "edit" }), null);
+  assert.equal(await store.getVersion("nope"), undefined);
+});
+
+test("saveSceneWithVersion skips duplicate and empty snapshots", async () => {
+  const { store } = setup();
+  const { a } = await book(store);
+  // Empty scene with no versions: nothing to snapshot.
+  const r0 = await store.saveSceneWithVersion({ id: a.id, blocks: blk("Hello.") }, { reason: "continue" });
+  assert.equal(r0.version, null);
+  assert.equal((await store.listVersions(a.id)).length, 0);
+  const r1 = await store.saveSceneWithVersion({ id: a.id, blocks: blk("Bye.") }, { reason: "rewrite" });
+  assert.ok(r1.version);
+  // Newest version is "Hello."; current is "Bye." -> snapshot.
+  const m = await store.addVersion(a.id, "manual");
+  assert.deepEqual(texts(m.blocks), ["Bye."]);
+  // Current text equals the newest version -> skipped.
+  const r2 = await store.saveSceneWithVersion({ id: a.id, blocks: blk("Third.") }, { reason: "tone" });
+  assert.equal(r2.version, null);
+  assert.deepEqual(texts((await store.getScene(a.id)).blocks), ["Third."]);
+  assert.deepEqual(texts((await store.addVersion(a.id, "manual")).blocks), ["Third."]);
+  assert.equal(await store.addVersion(a.id, "manual"), null);
+  assert.equal((await store.listVersions(a.id)).length, 3);
+});
+
+test("addVersion snapshots the stored scene; duplicates and unknown scenes give null", async () => {
+  const { store } = setup();
+  const { p, a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("Alpha beta."), wordCount: 2 });
+  const v = await store.addVersion(a.id, "manual");
+  assert.equal(v.reason, "manual");
+  assert.equal(v.sceneId, a.id);
+  assert.equal(v.projectId, p.id);
+  assert.equal(v.wordCount, 2);
+  assert.deepEqual(v.blocks, blk("Alpha beta."));
+  assert.equal(await store.addVersion(a.id, "manual"), null);
+  assert.equal(await store.addVersion("nope", "manual"), null);
+  assert.deepEqual((await store.listVersions(a.id)).map((x) => x.id), [v.id]);
+});
+
+test("listVersions sorts newest first, ties by id", async () => {
+  const { h, store } = setup();
+  const { a, b } = await book(store);
+  await h.batch([
+    { type: "put", store: "versions", value: { id: "v1", sceneId: a.id, blocks: [], createdAt: 5 } },
+    { type: "put", store: "versions", value: { id: "v3", sceneId: a.id, blocks: [], createdAt: 9 } },
+    { type: "put", store: "versions", value: { id: "v2", sceneId: a.id, blocks: [], createdAt: 7 } },
+    { type: "put", store: "versions", value: { id: "va", sceneId: a.id, blocks: [], createdAt: 7 } },
+    { type: "put", store: "versions", value: { id: "vb", sceneId: b.id, blocks: [], createdAt: 8 } }
+  ]);
+  const list = await store.listVersions(a.id);
+  assert.deepEqual(list.map((v) => v.id), ["v3", "va", "v2", "v1"]);
+  assert.deepEqual(list[0].blocks, []);
+  assert.equal(list[0].wordCount, 0);
+  assert.equal(list[0].reason, "");
+  assert.deepEqual(await store.listVersions("none"), []);
+});
+
+test("versions are pruned to MAX_VERSIONS_PER_SCENE, oldest first", async () => {
+  const { store } = setup();
+  const { a, b } = await book(store);
+  assert.equal(MAX_VERSIONS_PER_SCENE, 30);
+  await store.saveScene({ id: a.id, blocks: blk("t0"), wordCount: 1 });
+  await store.saveScene({ id: b.id, blocks: blk("other"), wordCount: 1 });
+  await store.addVersion(b.id, "manual");
+  for(let i = 1; i <= 35; i++){
+    const r = await store.saveSceneWithVersion({ id: a.id, blocks: blk("t" + i), wordCount: 1 }, { reason: "edit" });
+    assert.deepEqual(texts(r.version.blocks), ["t" + (i - 1)]);
+  }
+  const list = await store.listVersions(a.id);
+  assert.equal(list.length, 30);
+  assert.deepEqual(texts(list[0].blocks), ["t34"]);
+  assert.deepEqual(texts(list[29].blocks), ["t5"]);
+  assert.equal((await store.listVersions(b.id)).length, 1);
+  const m = await store.addVersion(a.id, "manual");
+  assert.deepEqual(texts(m.blocks), ["t35"]);
+  const after = await store.listVersions(a.id);
+  assert.equal(after.length, 30);
+  assert.deepEqual(texts(after[29].blocks), ["t6"]);
+});
+
+test("restoreVersion snapshots the current text and puts the version back", async () => {
+  const { store } = setup();
+  const { a } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("Original words here."), wordCount: 3 });
+  const r1 = await store.saveSceneWithVersion({ id: a.id, blocks: blk("Rewritten."), wordCount: 1 }, { reason: "rewrite" });
+  const res = await store.restoreVersion(r1.version.id);
+  assert.equal(res.version.reason, "restore");
+  assert.deepEqual(texts(res.version.blocks), ["Rewritten."]);
+  assert.equal(res.version.wordCount, 1);
+  const sc = await store.getScene(a.id);
+  assert.deepEqual(sc.blocks, blk("Original words here."));
+  assert.equal(sc.wordCount, 3);
+  assert.deepEqual((await store.listVersions(a.id)).map((v) => v.reason), ["restore", "rewrite"]);
+  assert.equal(await store.restoreVersion("nope"), null);
+});
+
+test("saveSceneWithVersion writes everything in one batch", async () => {
+  const h = memoryHandle();
+  let batches = 0, lastOps = null, n = 0, t = 1000;
+  const spy = new Proxy(h, { get(target, key){
+    if(key === "batch") return (ops) => { batches++; lastOps = ops; return target.batch(ops); };
+    if(key === "put" || key === "del") return () => { throw new Error("unexpected " + key); };
+    return target[key];
+  } });
+  const store = createStore(h, { uid: () => "id" + (++n), now: () => ++t });
+  const spied = createStore(spy, { uid: () => "s" + (++n), now: () => ++t });
+  const { a } = await book(store);
+  for(let i = 0; i < MAX_VERSIONS_PER_SCENE; i++){
+    await store.saveScene({ id: a.id, blocks: blk("v" + i), wordCount: 1 });
+    await store.addVersion(a.id, "manual");
+  }
+  await store.saveScene({ id: a.id, blocks: blk("now"), wordCount: 1 });
+  const res = await spied.saveSceneWithVersion({ id: a.id, blocks: blk("next"), wordCount: 1 }, { reason: "expand" });
+  assert.equal(batches, 1);
+  assert.deepEqual(lastOps.map((o) => o.type + ":" + o.store), ["put:versions", "put:scenes", "put:projects", "del:versions"]);
+  assert.equal(lastOps[0].value.id, res.version.id);
+  const list = await store.listVersions(a.id);
+  assert.equal(list.length, 30);
+  assert.deepEqual(texts(list[0].blocks), ["now"]);
+  assert.ok(!list.some((v) => v.blocks[0].text === "v0"));
+});
+
+test("saveScene writes no version; scene deletes cascade to versions", async () => {
+  const { h, store } = setup();
+  const { p, c1, c2, a, b, c } = await book(store);
+  await store.saveScene({ id: a.id, blocks: blk("x"), wordCount: 1 });
+  await store.saveScene({ id: a.id, blocks: blk("y"), wordCount: 1 });
+  assert.equal((await h.getAll("versions")).length, 0);
+  for(const s of [a, b, c]){
+    await store.saveScene({ id: s.id, blocks: blk("one " + s.id), wordCount: 2 });
+    await store.saveSceneWithVersion({ id: s.id, blocks: blk("two " + s.id), wordCount: 2 }, { reason: "edit" });
+  }
+  assert.equal((await h.getAll("versions")).length, 3);
+  await store.deleteScene(a.id);
+  assert.equal((await store.listVersions(a.id)).length, 0);
+  assert.equal((await h.getAll("versions")).length, 2);
+  await store.deleteChapter(c1.id);
+  assert.equal((await store.listVersions(b.id)).length, 0);
+  assert.equal((await store.listVersions(c.id)).length, 1);
+  const data = await store.loadProjectData(p.id);
+  assert.equal("versions" in data, false);
+  await store.importProject(data, { mode: "replace" });
+  assert.equal((await h.getAll("versions")).length, 0);
+  await store.saveSceneWithVersion({ id: c.id, blocks: blk("three"), wordCount: 1 }, { reason: "edit" });
+  assert.equal((await h.getAll("versions")).length, 1);
+  await store.deleteProject(p.id);
+  assert.equal((await h.getAll("versions")).length, 0);
+  void c2;
 });

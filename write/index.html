@@ -47,22 +47,68 @@
 
   #app{position:fixed;inset:0;display:flex;flex-direction:column;height:100dvh;transform-origin:top}
 
-  header{display:flex;align-items:center;gap:10px;
+  header{display:flex;align-items:center;gap:4px;
     padding:calc(env(safe-area-inset-top) + 8px) 12px 8px;
     background:rgba(14,16,20,.72);backdrop-filter:saturate(160%) blur(18px);-webkit-backdrop-filter:saturate(160%) blur(18px);
     border-bottom:1px solid var(--border-soft);z-index:5}
-  .hbtn{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;color:var(--dim);transition:background .15s,color .15s}
+  .hbtn{flex:none;width:38px;height:38px;border-radius:11px;display:grid;place-items:center;color:var(--dim);transition:background .15s,color .15s}
   .hbtn:active{background:var(--surface-2);color:var(--text)}
-  .title-wrap{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
+  .title-wrap{flex:1;display:flex;align-items:center;gap:10px;min-width:0;padding:0 4px}
+  [data-views][hidden]{display:none !important}
   .monogram{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;flex:none;
     background:linear-gradient(150deg,#2a2018,#1a1d24);box-shadow:inset 0 0 0 1px #38404d}
   .monogram b{font-size:15px;color:var(--accent);font-weight:800;letter-spacing:-.5px}
-  .titles{min-width:0}
-  .app-title{font-size:15px;font-weight:700;letter-spacing:-.01em;line-height:1.1}
+  @media (max-width:480px){.monogram{display:none}}
+  .titles{min-width:0;flex:1}
+  .app-title{display:block;font-size:15px;font-weight:700;letter-spacing:-.01em;line-height:1.15;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .app-sub{display:block;font-size:11.5px;color:var(--faint);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .app-sub:empty{display:none}
   .model-pill{display:inline-flex;align-items:center;gap:5px;margin-top:1px;font-size:11.5px;color:var(--dim);
-    max-width:62vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .model-pill .pdot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
   .model-pill .chev{font-size:9px;opacity:.6}
+
+  #views{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
+  .view{display:none;flex:1;min-height:0;flex-direction:column}
+  .view.active{display:flex}
+  #viewChat{position:relative}
+  .list{padding:8px 12px;max-width:var(--maxw);margin:0 auto;width:100%}
+  #viewLibrary,#viewOutline{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:calc(env(safe-area-inset-bottom) + 16px)}
+  .empty-view{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:10px;padding:48px 24px;color:var(--dim);font-size:15px}
+  .empty-view[hidden]{display:none}
+  .empty-view p{margin:0 0 6px}
+  .empty-view button{padding:12px 20px;border-radius:13px;font-size:14.5px;font-weight:700;min-width:170px}
+  .project-row,.scene-row{display:flex;align-items:center;gap:8px;width:100%;min-height:56px;padding:8px 6px 8px 14px;border-radius:14px;text-align:left;background:var(--surface);border:1px solid var(--border-soft);margin-top:8px;color:var(--text)}
+  .project-row:active,.scene-row:active{background:var(--surface-2)}
+  .row-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .row-title{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row-meta{font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .scene-row>.row-meta{flex:none;overflow:visible}
+  .row-menu{flex:none;width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:var(--dim)}
+  .row-menu:active{background:var(--surface-3);color:var(--text)}
+  .chapter{margin-top:18px}
+  .chapter-head{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 6px 0 4px}
+  .chapter-title{flex:1;min-width:0;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chapter-meta{flex:none;font-size:12px;color:var(--faint);font-variant-numeric:tabular-nums}
+  .scene-summary{font-size:13px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .add-scene{display:block;width:100%;min-height:44px;margin-top:8px;border-style:dashed}
+  #outlineAddChapter{margin:8px 0 0;text-align:center;min-height:48px}
+  #viewScene{background:var(--bg)}
+  #sceneTitle{flex:none;width:100%;background:var(--surface);border:none;border-bottom:1px solid var(--border-soft);color:var(--text);font-family:inherit;font-size:20px;font-weight:700;letter-spacing:-.01em;padding:14px 16px;outline:none;border-radius:0}
+  #sceneTitle::placeholder,#sceneText::placeholder{color:var(--faint)}
+  #sceneText{flex:1;min-height:0;width:100%;resize:none;background:transparent;border:none;outline:none;color:var(--text);font-family:inherit;font-size:16px;line-height:1.6;padding:16px 16px calc(env(safe-area-inset-bottom) + 16px);-webkit-overflow-scrolling:touch;border-radius:0}
+  body.kb-open #sceneText{padding-bottom:16px}
+  .scene-bar{flex:none;display:flex;justify-content:space-between;gap:12px;font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;padding:6px 16px calc(env(safe-area-inset-bottom) + 6px);border-top:1px solid var(--border-soft);background:var(--bg-2)}
+  body.kb-open .scene-bar{padding-bottom:6px}
+  .scene-chip{display:inline-flex;align-items:center;max-width:100%;margin:0 0 6px 6px;padding:5px 11px;border-radius:999px;border:1px solid var(--border);background:none;font-size:12px;color:var(--faint)}
+  .scene-chip[hidden]{display:none}
+  .scene-chip.on{border-color:var(--accent);color:var(--accent-2)}
+  #scene-chip-text,#sceneChipText{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #menuOverlay{z-index:46}
+  .menu-items{display:flex;flex-direction:column;gap:2px;margin-bottom:4px}
+  .menu-item{display:block;width:100%;min-height:48px;padding:0 14px;border-radius:12px;text-align:left;font-size:16px;font-weight:500;color:var(--text)}
+  .menu-item:active{background:var(--surface-2)}
+  .menu-item.danger{color:var(--danger)}
 
   #scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:6px 0 14px}
   .msg{width:100%;max-width:var(--maxw);margin:16px auto 0;padding:0 16px}
@@ -159,7 +205,7 @@
   .fab{position:absolute;right:14px;bottom:84px;width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--surface-2);border:1px solid var(--border);color:var(--dim);box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transform:translateY(8px) scale(.9);pointer-events:none;transition:.2s}
   .fab.show{opacity:1;transform:none;pointer-events:auto}
 
-  #empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:8px;pointer-events:none}
+  #empty{position:absolute;inset:0 0 70px 0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;gap:8px;pointer-events:none}
   #empty .ehero{width:62px;height:62px;border-radius:18px;display:grid;place-items:center;margin-bottom:6px;background:linear-gradient(150deg,#2a2018,#16191f);box-shadow:inset 0 0 0 1px #38404d}
   #empty .ehero b{font-size:30px;color:var(--accent);font-weight:800}
   #empty h1{font-size:21px;font-weight:700;letter-spacing:-.02em;margin:0}
@@ -246,55 +292,111 @@
 <body>
 <div id="app">
   <header>
-    <button class="hbtn" id="newChat" aria-label="New chat" title="New chat">
+    <button class="hbtn" id="hdrBack" data-views="outline scene chat" aria-label="Back" title="Back">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button class="hbtn" id="newChat" data-views="chat" aria-label="New chat" title="New chat">
       <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
     </button>
     <div class="title-wrap">
       <div class="monogram"><b>W</b></div>
       <div class="titles">
-        <div class="app-title">Ownchat Write</div>
-        <button class="model-pill" id="modelPill"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
+        <span class="app-title" id="hdrTitle">Ownchat Write</span>
+        <span class="app-sub" id="hdrSub"></span>
+        <button class="model-pill" id="modelPill" data-views="chat"><span class="pdot"></span><span id="pillText">grok 4.7 · max-think</span><span class="chev">▾</span></button>
       </div>
     </div>
-    <button id="openBible" class="hbtn" aria-label="Story bible" title="Story bible">
+    <button class="hbtn" id="hdrNewProject" data-views="library" aria-label="New project" title="New project">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="hbtn" id="hdrImport" data-views="library" aria-label="Import bundle" title="Import bundle">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M12 3v12M7 10l5 5 5-5M5 21h14"/></svg>
+    </button>
+    <button class="hbtn" id="hdrChat" data-views="outline scene" aria-label="Project chat" title="Project chat">
+      <svg class="ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    </button>
+    <button class="hbtn" id="hdrMenu" data-views="outline" aria-label="More" title="More">
+      <svg class="ic" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+    </button>
+    <button id="openBible" class="hbtn" data-views="outline scene chat" aria-label="Story bible" title="Story bible">
       <svg class="ic" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></svg>
     </button>
-    <button class="hbtn" id="openSettings" aria-label="Settings" title="Settings">
+    <button class="hbtn" id="openSettings" data-views="library scene chat" aria-label="Settings" title="Settings">
       <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
   </header>
 
-  <div id="scroll">
-    <div id="list"></div>
-    <div id="empty">
-      <div class="ehero"><b>W</b></div>
-      <h1>Private chat</h1>
-      <p>Talk to Grok, Claude and other OpenRouter models with your own key. Your key and history stay on this device.</p>
-      <div class="chips" id="starters"></div>
-      <button class="ebtn" id="emptyKey">Add API key</button>
-      <button class="ebtn" id="importLegacy" type="button" hidden>Import chat from Ownchat</button>
-    </div>
-    <button class="fab" id="fab" aria-label="Scroll to bottom">
-      <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
-    </button>
-  </div>
+  <main id="views">
+    <section class="view active" id="viewLibrary">
+      <div id="projectList" class="list"></div>
+      <div id="libraryEmpty" class="empty-view" hidden>
+        <p>No projects yet.</p>
+        <button id="libraryNew" class="btn-primary" type="button">New project</button>
+        <button id="libraryImport" class="btn-secondary" type="button">Import bundle</button>
+      </div>
+    </section>
 
-  <div class="composer">
-    <button id="ctxMeter" class="ctx-meter" type="button" hidden><span id="ctxMeterText"></span></button>
-    <div class="attach-wrap" id="attachWrap" hidden></div>
-    <div class="composer-row">
-      <button class="cbtn" id="attachBtn" aria-label="Attach a .md or .txt file">
-        <svg class="ic" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.48"/></svg>
-      </button>
-      <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter" autocapitalize="sentences" spellcheck="true"></textarea>
-      <button class="send" id="send" aria-label="Send">
-        <svg class="ic" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+    <section class="view" id="viewOutline">
+      <div id="outlineList" class="list"></div>
+      <div id="outlineEmpty" class="empty-view" hidden>
+        <p>No chapters yet.</p>
+        <button id="outlineEmptyAdd" class="btn-primary" type="button">Add chapter</button>
+      </div>
+      <div class="list" style="padding-top:0"><button id="outlineAddChapter" class="ghost-btn btn-block" type="button">+ Add chapter</button></div>
+    </section>
+
+    <section class="view" id="viewScene">
+      <input id="sceneTitle" type="text" placeholder="Scene title" autocomplete="off">
+      <textarea id="sceneText" placeholder="Write…"></textarea>
+      <div class="scene-bar"><span id="sceneWords">0 words</span><span id="sceneSaved">Saved</span></div>
+    </section>
+
+    <section class="view" id="viewChat">
+    <div id="scroll">
+      <div id="list"></div>
+      <div id="empty">
+        <div class="ehero"><b>W</b></div>
+        <h1>Project chat</h1>
+        <p>Talk to Grok, Claude and other OpenRouter models with your own key. Your key and history stay on this device.</p>
+        <div class="chips" id="starters"></div>
+        <button class="ebtn" id="emptyKey">Add API key</button>
+        <button class="ebtn" id="importLegacy" type="button" hidden>Import chat from Ownchat</button>
+      </div>
+      <button class="fab" id="fab" aria-label="Scroll to bottom">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
       </button>
     </div>
-  </div>
+
+
+    <div class="composer">
+      <button id="sceneChip" class="scene-chip" type="button" hidden><span id="sceneChipText"></span></button>
+      <button id="ctxMeter" class="ctx-meter" type="button" hidden><span id="ctxMeterText"></span></button>
+      <div class="attach-wrap" id="attachWrap" hidden></div>
+      <div class="composer-row">
+        <button class="cbtn" id="attachBtn" aria-label="Attach a .md or .txt file">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.48"/></svg>
+        </button>
+        <textarea id="input" rows="1" placeholder="Message…" enterkeyhint="enter" autocapitalize="sentences" spellcheck="true"></textarea>
+        <button class="send" id="send" aria-label="Send">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </div>
+    </div>
+    </section>
+  </main>
 </div>
 
+<input type="file" id="bundleInput" accept=".zip,application/zip,application/x-zip-compressed" hidden>
 <input type="file" id="fileInput" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden>
+
+<!-- Generic menu sheet -->
+<div class="overlay" id="menuOverlay">
+  <div class="sheet" role="dialog" aria-label="Menu">
+    <div class="grip"></div>
+    <h2 id="menuTitle"></h2>
+    <div id="menuItems" class="menu-items"></div>
+  </div>
+</div>
 
 <!-- Settings sheet -->
 <div class="overlay" id="settingsOverlay">
@@ -426,7 +528,7 @@
 setTimeout(function(){
   if(document.documentElement.dataset.ready !== "1"){
     var t = document.getElementById("toast");
-    t.textContent = "App failed to load. Pull to refresh.";
+    t.textContent = "App failed to load. Close other Ownchat Write tabs and pull to refresh.";
     t.classList.add("show");
   }
 }, 5000);

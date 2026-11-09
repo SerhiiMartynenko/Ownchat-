@@ -104,7 +104,7 @@ async function run(browser) {
       tx.onerror = () => rej(tx.error);
     };
   }));
-  await page.evaluate(() => localStorage.setItem('ownchat.write.settings.v1', JSON.stringify({ apiKey: 'k', model: 'x-ai/grok-4.7', utilityModel: 'x-ai/grok-4.5', thinking: 'off', system: '', endpoint: '' })));
+  await page.evaluate(() => localStorage.setItem('ownchat.write.settings.v1', JSON.stringify({ apiKey: 'k', model: 'x-ai/grok-4.7', utilityModel: 'x-ai/grok-4.5', thinking: 'off', system: '', endpoint: '', editorMode: 'write' })));
   await page.goto(BASE + '/write/');
   await ready();
   check('A. migrated v1 data lands on the outline of "My project"', (await view()) === 'outline' && (await page.textContent('#hdrTitle')) === 'My project', [await view(), await page.textContent('#hdrTitle')]);

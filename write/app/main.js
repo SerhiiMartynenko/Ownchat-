@@ -43,7 +43,7 @@ import { initSceneEditor } from "./ui/scene.js";
 
   /* ===== State ===== */
   // settings.system is the legacy chat system prompt: kept for the one-time style-guide migration, never sent.
-  var settings = { apiKey:"", model:DEFAULT_MODEL, utilityModel:DEFAULT_UTILITY_MODEL, thinking:"max", system:"", endpoint:"" };
+  var settings = { apiKey:"", model:DEFAULT_MODEL, utilityModel:DEFAULT_UTILITY_MODEL, thinking:"max", system:"", endpoint:"", editorMode:"blocks" };
   var messages = [];          // the thread's messages; single source for rendering (same array as thread.messages)
   var db = null;              // storage handle from openDb()
   var store = null;           // project store over db (store.js)
@@ -681,6 +681,7 @@ import { initSceneEditor } from "./ui/scene.js";
         settings.thinking= s.thinking|| "max";
         settings.system  = s.system  || "";
         settings.endpoint= typeof s.endpoint === "string" ? s.endpoint : "";
+        settings.editorMode = s.editorMode === "write" ? "write" : "blocks";
       }
     }catch(e){}
   }
@@ -980,6 +981,7 @@ import { initSceneEditor } from "./ui/scene.js";
         await sceneEditor.open(s.id);
         if(seq !== goSeq) return;
         setHeader(project.title, "");
+        updateModeLabel();
         show("scene");
       }
       currentRoute = route;
@@ -1004,6 +1006,60 @@ import { initSceneEditor } from "./ui/scene.js";
     if(meta.currentProjectId && await store.getProject(meta.currentProjectId)) return { name:"outline", projectId: meta.currentProjectId };
     var projects = await store.listProjects();
     return projects.length ? { name:"outline", projectId: projects[0].id } : { name:"library" };
+  }
+
+  /* ===== Scene header: editing mode and menu ===== */
+  function updateModeLabel(){
+    var b = $("hdrMode");
+    var write = (sceneEditor ? sceneEditor.mode() : settings.editorMode) === "write";
+    b.textContent = write ? "Blocks" : "Write";
+    b.setAttribute("aria-label", write ? "Switch to Blocks" : "Switch to Write");
+    b.title = b.getAttribute("aria-label");
+  }
+  function setEditorMode(m){
+    settings.editorMode = m === "write" ? "write" : "blocks";
+    saveSettings();
+    updateModeLabel();
+    return sceneEditor.setMode(settings.editorMode).then(updateModeLabel, function(e){
+      toast("Could not switch: " + ((e && e.message) || "unknown error"));
+    });
+  }
+  function toggleEditorMode(){
+    return setEditorMode((sceneEditor ? sceneEditor.mode() : settings.editorMode) === "write" ? "blocks" : "write");
+  }
+
+  async function sceneMenu(){
+    var sc = sceneEditor && sceneEditor.current();
+    if(!sc) return;
+    var write = sceneEditor.mode() === "write";
+    var act = await openMenu(sc.title || "Scene", [
+      { act:"save-version", label:"Save version" },
+      { act:"versions", label:"Versions…" },
+      { act:"continue", label:"Continue writing" },
+      { act:"mode", label: write ? "Switch to Blocks" : "Switch to Write" },
+      { act:"rename", label:"Rename scene" }
+    ]);
+    if(act === "save-version") sceneEditor.saveVersion();
+    else if(act === "versions") sceneEditor.openVersions();
+    else if(act === "continue") sceneEditor.runAction("continue", { atEnd: true });
+    else if(act === "mode") toggleEditorMode();
+    else if(act === "rename"){
+      var t = window.prompt("Scene title", $("sceneTitle").value || sc.title || "");
+      if(t == null || !t.trim()) return;
+      try{
+        await sceneEditor.flush();
+        var rec = await store.renameScene(sc.id, t);
+        if(rec){
+          sceneEditor.renamed(rec);
+          if(activeScene && activeScene.id === rec.id) activeScene = Object.assign({}, activeScene, { title: rec.title });
+        }
+      }catch(e){ toast("Could not rename the scene"); }
+    }
+  }
+  function headerMenu(){
+    var v = document.body.dataset.view;
+    if(v === "outline") outline.projectMenu();
+    else if(v === "scene") sceneMenu();
   }
 
   /* ===== Export / import ===== */
@@ -1074,10 +1130,18 @@ import { initSceneEditor } from "./ui/scene.js";
       onSceneRenamed: function(sid){ if(activeScene && activeScene.id === sid) store.getScene(sid).then(function(s){ if(s && activeScene && activeScene.id === s.id) activeScene = s; }); },
       onScenesDeleted: function(ids){ if(activeScene && ids.indexOf(activeScene.id) >= 0){ activeScene = null; updateMeter(); } } });
     sceneEditor = initSceneEditor({ $: $, store: store, toast: toast, uid: uid,
+      openMenu: openMenu, callApi: callApi,
+      getSettings: function(){ return settings; },
+      getBible: function(){ return bible; },
+      prompt: function(msg, def){ return window.prompt(msg, def == null ? "" : def); },
+      confirm: function(msg){ return window.confirm(msg); },
       onOpened: function(s){ if(project && s.projectId === project.id){ activeScene = s; project.lastSceneId = s.id; } },
       onSaved: function(rec){ if(activeScene && activeScene.id === rec.id) activeScene = rec; } });
 
     $("hdrBack").addEventListener("click", goBack);
+    $("hdrMenu").addEventListener("click", headerMenu);
+    $("hdrMode").addEventListener("click", toggleEditorMode);
+    updateModeLabel();
     $("hdrChat").addEventListener("click", function(){
       if(!project) return;
       chatOrigin = { hash: formatRoute(currentRoute), projectId: project.id };

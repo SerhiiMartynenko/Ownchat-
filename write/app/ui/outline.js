@@ -156,7 +156,6 @@ export function initOutline(deps){
 
   addChapterBtn.addEventListener("click", addChapter);
   $("outlineEmptyAdd").addEventListener("click", addChapter);
-  $("hdrMenu").addEventListener("click", projectMenu);
-
-  return { renderOutline: renderOutline };
+  // #hdrMenu is bound once in main.js, which calls projectMenu() while the outline is shown.
+  return { renderOutline: renderOutline, projectMenu: projectMenu };
 }

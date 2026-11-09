@@ -141,6 +141,16 @@ same origin as the chat, with its own storage keys, and it leaves the root chat
 untouched. It uses ES modules, so it must be served over http (it won't work from
 `file://`): run `python3 -m http.server` from the repo root and open `/write/`.
 
+Features so far:
+
+- Projects, chapters and scenes, with a scene editor that autosaves.
+- The open scene is sent along with the project chat (toggle in the chat).
+- Export and import as an `.ownchat.zip` bundle (Markdown per scene and card plus a
+  manifest, lossless), and export of the manuscript as Markdown.
+- iOS: use "Save to Files" from the share sheet. Safari auto-unzips plain downloads,
+  but a re-zipped folder still imports.
+- Data lives in IndexedDB on the device, so export regularly.
+
 Run all tests with `npm test` (or `node --test`).
 
 `npm run e2e` runs the browser end-to-end checks (needs Playwright + Chromium

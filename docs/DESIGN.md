@@ -1,6 +1,6 @@
 # Ownchat Writing Tool: Design
 
-Status: agreed design, not yet implemented. Branch: `claude/ai-writing-tool-planning-fowkbw`.
+Status: phases 1 and 2 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
 
 ## 1. Goal
 
@@ -174,3 +174,17 @@ models (Opus for design-sensitive modules, Sonnet for mechanical work). The
 top-level session only briefs, reviews and verifies. Each phase ends with the
 app usable on the phone PWA and with `node --test` passing for any new
 pure-logic modules (context budgeting, diff, export/import).
+
+## Implementation notes (phases 1 and 2)
+
+Deviations from the design above:
+
+- The brief and the style guide live on the bible record. A project points at its
+  bible and chat thread through `bibleId` and `threadId`.
+- The first project adopts the phase 1 `default` bible and thread records, so
+  existing data is migrated in place rather than copied.
+- Scenes store `blocks[]`, built from the textarea by splitting on blank lines. Soft
+  line breaks inside a paragraph are not preserved.
+- The scene layer sits after the cards and before the summary. This reaches
+  Anthropic's limit of 4 cache breakpoints, so phase 4 must merge markers.
+- Settings stay in localStorage, not IndexedDB.

@@ -154,7 +154,17 @@ Features so far:
 - Versions: accepting an AI change snapshots the previous text; "Save version"
   and "Versions…" live in the scene menu. Up to 30 versions per scene are kept on
   the device (they are not part of the export bundle).
-- The open scene is sent along with the project chat (toggle in the chat).
+- Chat is scoped: every scene has its own thread (open it from the scene with the
+  chat button; switch between Scene and Project at the top of the chat), and the
+  project thread stays for whole-book talk. The open scene is sent along with the
+  project chat (toggle in the chat).
+- Scene summaries: when you leave a scene whose text changed, the utility model
+  writes a short digest of it in the background. Later scenes and the project chat
+  get a "Story so far" layer built from those digests (out-of-date ones are marked).
+  "Summary…" in the scene menu shows, edits and regenerates a scene's digest.
+- Proposed facts: the same digest calls (and chat summaries) suggest new characters,
+  places and plot threads. They appear in a Proposed section at the top of the story
+  bible, where you accept or dismiss them; the model never edits approved cards.
 - Export and import as an `.ownchat.zip` bundle (Markdown per scene and card plus a
   manifest, lossless), and export of the manuscript as Markdown.
 - iOS: use "Save to Files" from the share sheet. Safari auto-unzips plain downloads,

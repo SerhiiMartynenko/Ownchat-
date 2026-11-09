@@ -1,6 +1,6 @@
 # Ownchat Writing Tool: Design
 
-Status: phases 1 to 3 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
+Status: phases 1 to 4 are implemented under `write/` (live at `/Ownchat-/write/`); later phases are still design. Branch: `claude/ai-writing-tool-planning-fowkbw`.
 
 ## 1. Goal
 
@@ -123,8 +123,10 @@ scene note". The current scene is always in context for a scene thread.
 - **Library**: projects, new, import.
 - **Outline**: chapters and scenes with word counts and summary preview; reorder
   and open.
-- **Scene**: block editor (main writing surface). Floating button opens the
-  scene's chat thread as a sheet over the editor so text stays visible.
+- **Scene**: block editor (main writing surface). The chat button opens the
+  scene's chat thread as a full-screen chat with a Scene / Project scope switch;
+  Back returns to the scene. (A sheet over the editor was considered and dropped:
+  on a phone it leaves too little of the text visible to be useful.)
 - **Chat**: current thread with the context meter at the top.
 - **Bible**: cards by type, Proposed section on top.
 - **Settings**: API key, writing model, utility model, reasoning effort, proxy
@@ -175,7 +177,7 @@ top-level session only briefs, reviews and verifies. Each phase ends with the
 app usable on the phone PWA and with `node --test` passing for any new
 pure-logic modules (context budgeting, diff, export/import).
 
-## Implementation notes (phases 1 to 3)
+## Implementation notes (phases 1 to 4)
 
 Deviations from the design above:
 
@@ -185,11 +187,21 @@ Deviations from the design above:
   existing data is migrated in place rather than copied.
 - Scenes store `blocks[]`, built from the textarea by splitting on blank lines. Soft
   line breaks inside a paragraph are not preserved.
-- The scene layer sits after the cards and before the summary. This reaches
-  Anthropic's limit of 4 cache breakpoints, so phase 4 must merge markers.
+- Layer order is style guide and brief, cards, story so far, current scene, thread
+  summary. When all five are present the first two share one cache marker, so
+  Anthropic requests never exceed 4 breakpoints.
 - Settings stay in localStorage, not IndexedDB.
 - Phase 3: the blocks surface is the default scene view, and a "Write" mode keeps the
   plain textarea for long typing; both edit the same draft and share one autosave.
   Rewrite requests are built separately from the chat context (rules + style guide +
   brief, then matched cards) and use at most 2 cache breakpoints. Versions are kept
   on the device only, capped at 30 per scene, and are not in the export bundle.
+- Phase 4: scene threads are stored as `ts-<sceneId>` with `scope:"scene"`; the
+  chat opens as a full view (route `#/s/<id>/chat`), not a sheet. Scene summaries are
+  made by the utility model when the author leaves a changed scene of at least 40
+  words; staleness is a hash of the scene text against `summaryHash`, and stale
+  digests are still sent, marked as possibly out of date. Proposed facts ride on the
+  summary calls (scene digest and chat fold) as a `### Proposed facts` section and
+  become cards with `status:"proposed"` and a `source`; `matchCards` ignores them
+  until accepted. The bundle stays at version 1: scene threads are added as
+  `chat/scene-*.json` files listed under `sceneThreads` in the manifest.

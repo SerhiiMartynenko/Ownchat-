@@ -1,5 +1,7 @@
 // Outline view: chapters and scenes of one project, with menus to rename, move and delete.
 import { el, rowMenu, words } from "./common.js";
+import { blocksToText } from "../scene.js";
+import { hashText } from "../util.js";
 
 export function initOutline(deps){
   var $ = deps.$, store = deps.store, toast = deps.toast, openMenu = deps.openMenu;
@@ -38,7 +40,10 @@ export function initOutline(deps){
         row.setAttribute("data-id", sc.id);
         var main = el("span", "row-main");
         main.appendChild(el("span", "row-title", sc.title || "Untitled scene"));
-        main.appendChild(el("span", "scene-summary", (sc.summary || "").trim() || "No summary yet"));
+        var sum = (sc.summary || "").trim();
+        var stale = !!sum && hashText(blocksToText(sc.blocks)) !== sc.summaryHash;
+        var sumEl = el("span", "scene-summary" + (stale ? " stale" : ""), sum ? sum + (stale ? " \u00b7 out of date" : "") : "No summary yet");
+        main.appendChild(sumEl);
         row.appendChild(main);
         row.appendChild(el("span", "row-meta", words(Number(sc.wordCount) || 0)));
         row.appendChild(rowMenu("Scene actions", function(){ sceneMenu(sc); }));
@@ -107,8 +112,13 @@ export function initOutline(deps){
       { act: "rename", label: "Rename" },
       { act: "up", label: "Move up" },
       { act: "down", label: "Move down" },
+      { act: "summary", label: "Summary\u2026" },
       { act: "delete", label: "Delete scene", danger: true }
     ]);
+    if(act === "summary"){
+      if(deps.openSummary) deps.openSummary(sc);
+      return;
+    }
     if(act === "rename"){
       var t = window.prompt("Scene title", sc.title || "");
       if(t == null || !t.trim()) return;

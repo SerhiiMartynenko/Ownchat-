@@ -1,6 +1,6 @@
 // Story bible sheet and card editor (DOM). State lives in main.js; this module reads it via getBible()
 // and hands new bibles back via setBible(), then calls onChange() to persist and refresh.
-import { CARD_TYPES, normalizeBible, newCard, upsertCard, deleteCard, togglePin, parseAliases } from "../bible.js";
+import { CARD_TYPES, normalizeBible, newCard, upsertCard, deleteCard, togglePin, parseAliases, acceptCard, listProposed } from "../bible.js";
 
 var TYPE_HEADINGS = { character:"Characters", place:"Places", thread:"Threads", note:"Notes" };
 var TYPE_SHORT = { character:"Char", place:"Place", thread:"Thread", note:"Note" };
@@ -18,7 +18,7 @@ export function initBibleUI(deps){
     cardPin: $("cardPin"), cardDelete: $("cardDelete"), cardCancel: $("cardCancel"), cardSave: $("cardSave")
   };
   var editingId = null;     // id of the card being edited, null for a new card
-  var editingCreatedAt = 0;
+  var editing = null;       // the stored card being edited (keeps status, source, createdAt)
 
   function commit(next){ deps.setBible(next); deps.onChange(); }
 
@@ -31,11 +31,60 @@ export function initBibleUI(deps){
   }
 
   /* ----- Bible sheet ----- */
+  function sourceText(card){
+    var src = card.source;
+    if(src && src.kind === "scene") return "from scene \u201c" + (src.sceneTitle || "Untitled scene") + "\u201d";
+    if(src && src.kind === "chat") return "from chat";
+    return "";
+  }
+  function proposedRow(card){
+    var row = document.createElement("div");
+    row.className = "card-row proposed";
+    row.setAttribute("role", "button"); row.setAttribute("tabindex", "0"); row.setAttribute("data-id", card.id);
+    row.innerHTML = '<span class="card-type"></span>' +
+      '<span class="card-main"><span class="card-name"></span><span class="card-source"></span></span>' +
+      '<span class="card-acts"><button type="button" class="card-act accept">Accept</button>' +
+      '<button type="button" class="card-act dismiss">Dismiss</button></span>';
+    row.querySelector(".card-type").textContent = TYPE_SHORT[card.type] || "Note";
+    row.querySelector(".card-name").textContent = card.name;
+    var src = row.querySelector(".card-source"), st = sourceText(card);
+    if(st) src.textContent = st; else src.remove();
+    row.querySelector(".card-act.accept").addEventListener("click", function(e){
+      e.stopPropagation();
+      commit(acceptCard(deps.getBible(), card.id));
+      deps.toast("Card accepted");
+      renderCards();
+    });
+    row.querySelector(".card-act.dismiss").addEventListener("click", function(e){
+      e.stopPropagation();
+      commit(deleteCard(deps.getBible(), card.id));
+      deps.toast("Dismissed");
+      renderCards();
+    });
+    row.addEventListener("click", function(){ openCardEditor(card); });
+    row.addEventListener("keydown", function(e){
+      if(e.target !== row) return;
+      if(e.key === "Enter" || e.key === " "){ e.preventDefault(); openCardEditor(card); }
+    });
+    return row;
+  }
+
   function renderCards(){
     var bible = deps.getBible();
-    var cards = bible.cards || [];
+    var all = bible.cards || [];
+    var proposed = listProposed(bible);
+    var cards = all.filter(function(c){ return c.status === "approved"; });
     els.cards.innerHTML = "";
-    els.empty.hidden = cards.length > 0;
+    els.empty.hidden = cards.length + proposed.length > 0;
+    if(proposed.length){
+      var pw = document.createElement("div");
+      pw.className = "card-group proposed";
+      var ph = document.createElement("h4");
+      ph.className = "card-group-title"; ph.textContent = "Proposed";
+      pw.appendChild(ph);
+      proposed.forEach(function(card){ pw.appendChild(proposedRow(card)); });
+      els.cards.appendChild(pw);
+    }
     CARD_TYPES.forEach(function(type){
       var group = cards.filter(function(c){ return c.type === type; })
         .sort(function(a, b){ return a.name.localeCompare(b.name); });
@@ -99,8 +148,11 @@ export function initBibleUI(deps){
     var bible = deps.getBible();
     var existing = p.id ? (bible.cards || []).find(function(c){ return c.id === p.id; }) : null;
     editingId = existing ? existing.id : null;
-    editingCreatedAt = existing ? existing.createdAt : 0;
-    els.cardTitle.textContent = existing ? "Edit card" : "New card";
+    editing = existing || null;
+    var isProposed = !!existing && existing.status === "proposed";
+    els.cardTitle.textContent = isProposed ? "Proposed card" : existing ? "Edit card" : "New card";
+    els.cardSave.textContent = isProposed ? "Accept" : "Save";
+    els.cardDelete.textContent = isProposed ? "Dismiss" : "Delete";
     setSeg(els.cardType, CARD_TYPES.indexOf(p.type) >= 0 ? p.type : "character");
     els.cardName.value = p.name || "";
     els.cardAliases.value = Array.isArray(p.aliases) ? p.aliases.join(", ") : (p.aliases || "");
@@ -112,29 +164,35 @@ export function initBibleUI(deps){
   function closeCardEditor(){
     els.cardOverlay.classList.remove("open");
     editingId = null;
+    editing = null;
     if(els.overlay.classList.contains("open")) renderCards();
   }
   function saveCard(){
     var name = els.cardName.value.trim();
     if(!name){ deps.toast("Name required"); els.cardName.focus(); return; }
+    var prev = editingId ? editing : null;
+    var wasProposed = !!prev && prev.status === "proposed";
     var card = newCard({
       id: editingId || undefined,
       type: segValue(els.cardType) || "character",
       name: name,
       aliases: parseAliases(els.cardAliases.value),
       body: els.cardBody.value,
-      pinned: segValue(els.cardPin) === "always"
+      pinned: segValue(els.cardPin) === "always",
+      status: wasProposed ? "approved" : (prev && prev.status) || "approved",
+      source: prev ? prev.source : null
     }, deps.uid);
-    if(editingId && editingCreatedAt) card.createdAt = editingCreatedAt;
+    if(prev && prev.createdAt) card.createdAt = prev.createdAt;
     commit(upsertCard(deps.getBible(), card));
-    deps.toast(editingId ? "Card saved" : "Card added");
+    deps.toast(wasProposed ? "Card accepted" : editingId ? "Card saved" : "Card added");
     closeCardEditor();
   }
   function removeCard(){
     if(!editingId) return;
-    if(!window.confirm("Delete this card?")) return;
+    var dismiss = !!editing && editing.status === "proposed";
+    if(!dismiss && !window.confirm("Delete this card?")) return;
     commit(deleteCard(deps.getBible(), editingId));
-    deps.toast("Card deleted");
+    deps.toast(dismiss ? "Dismissed" : "Card deleted");
     closeCardEditor();
   }
 
@@ -152,7 +210,11 @@ export function initBibleUI(deps){
   els.cardDelete.addEventListener("click", removeCard);
   els.cardOverlay.addEventListener("click", function(e){ if(e.target === els.cardOverlay) closeCardEditor(); });
 
-  api = { openBible: openBible, openCardEditor: openCardEditor, closeBible: closeBible };
+  // Re-render after the bible changed elsewhere (digest, fold); the open card editor is left alone.
+  function refresh(){ if(els.overlay.classList.contains("open")) renderCards(); }
+  function hasProposed(){ return listProposed(deps.getBible()).length > 0; }
+
+  api = { openBible: openBible, openCardEditor: openCardEditor, closeBible: closeBible, refresh: refresh, hasProposed: hasProposed };
   return api;
 }
 

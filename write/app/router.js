@@ -3,6 +3,7 @@
 //   #/p/<id>            project outline
 //   #/s/<id>            scene editor
 //   #/p/<id>/chat       project chat
+//   #/s/<id>/chat       scene chat
 // Anything else parses as the library.
 
 function dec(s){
@@ -21,6 +22,9 @@ export function parseRoute(hash){
   } else if(parts.length === 2 && parts[0] === "s"){
     var sid = dec(parts[1]);
     if(sid) return { name: "scene", sceneId: sid };
+  } else if(parts.length === 3 && parts[0] === "s" && parts[2] === "chat"){
+    var scid = dec(parts[1]);
+    if(scid) return { name: "sceneChat", sceneId: scid };
   }
   return { name: "library" };
 }
@@ -31,6 +35,7 @@ export function formatRoute(route){
   if(r.name === "outline" && r.projectId) return "#/p/" + e(r.projectId);
   if(r.name === "chat" && r.projectId) return "#/p/" + e(r.projectId) + "/chat";
   if(r.name === "scene" && r.sceneId) return "#/s/" + e(r.sceneId);
+  if(r.name === "sceneChat" && r.sceneId) return "#/s/" + e(r.sceneId) + "/chat";
   return "#/library";
 }
 

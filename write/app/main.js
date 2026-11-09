@@ -1,10 +1,11 @@
 import { DEFAULT_API_URL, FALLBACK_PROXY_URL, reasoningConfig, applyReasoning, validEndpoint, streamChat } from "./api.js";
-import { uid } from "./util.js";
-import { normalizeBible } from "./bible.js";
+import { uid, hashText } from "./util.js";
+import { normalizeBible, proposeFacts, listProposed, cardNames } from "./bible.js";
 import { assembleContext } from "./context.js";
 import { SUMMARY_DEFAULTS, planFold, runFold } from "./summaries.js";
 import { openDb, requestPersistence } from "./db.js";
 import { createStore, emptyThread } from "./store.js";
+import { createDigest } from "./digest.js";
 import { blocksToText } from "./scene.js";
 import { shareOrDownload, exportBundle, exportManuscript, readBundleFile } from "./export.js";
 import { parseRoute, formatRoute } from "./router.js";
@@ -13,6 +14,7 @@ import { initMenu, openMenu, closeMenu } from "./ui/menu.js";
 import { initLibrary } from "./ui/library.js";
 import { initOutline } from "./ui/outline.js";
 import { initSceneEditor } from "./ui/scene.js";
+import { initSummarySheet } from "./ui/summary.js";
 
 (function(){
   /* ===== Constants ===== */
@@ -50,8 +52,8 @@ import { initSceneEditor } from "./ui/scene.js";
   var project = null;         // the open project record
   var activeScene = null;     // the project's active scene record (last opened), or null
   var bible = normalizeBible({});
-  var thread = null;          // the project's thread record, see store.emptyThread()
-  var threadGen = 0;          // bumped on newChat so stale summary jobs are ignored
+  var thread = null;          // the loaded thread (project or scene scope), see store.emptyThread()
+  var threadGen = 0;          // bumped on newChat and thread switches so stale replies and summary jobs are ignored
   var summaryJob = null;      // { controller } while a fold runs
   var summaryFailed = false;
   var lastBreakdown = null;
@@ -60,6 +62,9 @@ import { initSceneEditor } from "./ui/scene.js";
   var currentAbort = null;
   var stick = true;
   var pendingThink = "max";
+  var storyChain = [];        // store.listSceneSummaries() of the open project, outline order
+  var digest = null;          // background scene summariser (digest.js)
+  var bibleUI = null, summarySheet = null;
 
   /* ===== Elements ===== */
   function $(id){ return document.getElementById(id); }
@@ -370,7 +375,7 @@ import { initSceneEditor } from "./ui/scene.js";
     var gen = threadGen;
     var ctx;
     try{
-      ctx = assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(),
+      ctx = assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(), storySoFar: storySoFarFor(),
         thread: { messages: messages, summary: thread.summary, summarizedUpTo: thread.summarizedUpTo } });
     }catch(e){
       finalizeError(els, (e && e.message) ? e.message : "Could not build the request.", els.node);
@@ -463,6 +468,16 @@ import { initSceneEditor } from "./ui/scene.js";
     if(!store || !project) return;
     store.saveBible(project.id, bible).catch(function(){ toast("Could not save the story bible"); });
   }
+  function refreshProposedBadge(){
+    $("openBible").classList.toggle("has-proposed", !!project && listProposed(bible).length > 0);
+  }
+  // The bible changed outside the bible sheet (digest, fold): persist and refresh what shows it.
+  function bibleChanged(){
+    saveBible();
+    if(bibleUI) bibleUI.refresh();
+    refreshProposedBadge();
+    updateMeter();
+  }
 
   /* ===== Legacy import (chat history from the original app) ===== */
   function legacyHistory(){
@@ -472,7 +487,8 @@ import { initSceneEditor } from "./ui/scene.js";
     }catch(e){ return []; }
   }
   function refreshImport(){
-    $("importLegacy").hidden = !(messages.length === 0 && legacyHistory().length > 0);
+    var sceneScope = !!thread && thread.scope === "scene";
+    $("importLegacy").hidden = sceneScope || !(messages.length === 0 && legacyHistory().length > 0);
   }
   function importLegacy(){
     var arr = legacyHistory();
@@ -507,23 +523,23 @@ import { initSceneEditor } from "./ui/scene.js";
 
   function newChat(){
     if(!thread || !project) return;
-    if(messages.length && !window.confirm("Start a new chat? This clears the current conversation on this device.")) return;
+    var scopeName = thread.scope === "scene" ? "scene chat" : "project chat";
+    if(messages.length && !window.confirm("Start a new " + scopeName + "? This clears the current conversation on this device.")) return;
     if(isStreaming && currentAbort) currentAbort.abort();
     if(summaryJob){ summaryJob.controller.abort(); summaryJob = null; }
     threadGen++;
     summaryFailed = false;
-    var includeScene = thread.includeScene !== false;
-    thread = emptyThread(thread.id, project.id);
-    thread.includeScene = includeScene;
+    var old = thread;
+    thread = emptyThread(old.id, project.id);
+    thread.scope = old.scope === "scene" && old.sceneId ? "scene" : "project";
+    thread.sceneId = thread.scope === "scene" ? old.sceneId : null;
+    thread.includeScene = old.includeScene !== false;
     messages = thread.messages;
     saveThread();
     renderHistory(); updateMeter();
   }
 
   /* ===== Rolling summaries ===== */
-  function approvedCardNames(){
-    return (bible.cards || []).filter(function(c){ return c.status === "approved"; }).map(function(c){ return c.name; });
-  }
   function maybeSummarize(force){
     if(summaryJob){ if(force) toast("Already summarizing"); return Promise.resolve(); }
     if(!settings.apiKey){ if(force) toast("Add your OpenRouter API key first"); return Promise.resolve(); }
@@ -535,7 +551,7 @@ import { initSceneEditor } from "./ui/scene.js";
     updateMeter();
     return runFold({
       messages: snapshot, summary: thread.summary, summarizedUpTo: from,
-      cardNames: approvedCardNames(), callApi: callApi, model: settings.utilityModel || DEFAULT_UTILITY_MODEL,
+      cardNames: cardNames(bible), callApi: callApi, model: settings.utilityModel || DEFAULT_UTILITY_MODEL,
       opts: SUMMARY_DEFAULTS, force: !!force, signal: job.controller.signal
     }).then(function(res){
       if(summaryJob === job) summaryJob = null;
@@ -549,6 +565,7 @@ import { initSceneEditor } from "./ui/scene.js";
       thread.summaryUpdatedAt = Date.now();
       summaryFailed = false;
       saveThread(); updateMeter();
+      proposeFromFold(res.facts);
       return maybeSummarize(false);   // catch up when a long backlog needs several folds
     }, function(err){
       if(summaryJob === job) summaryJob = null;
@@ -559,26 +576,65 @@ import { initSceneEditor } from "./ui/scene.js";
     });
   }
 
+  // Facts the fold spotted become proposed cards (never approved ones).
+  function proposeFromFold(facts){
+    if(!project || !thread || !facts || !facts.length) return;
+    var src = { kind:"chat", threadId: thread.id, at: Date.now() };
+    if(thread.sceneId) src.sceneId = thread.sceneId;
+    var r = proposeFacts(bible, facts, src, uid);
+    if(!r.added.length) return;
+    bible = r.bible;
+    bibleChanged();
+  }
+
   /* ===== Context meter ===== */
   function fmtK(n){ return n < 1000 ? String(n) : (n/1000).toFixed(1) + "k"; }
   function bibleHasContent(){
     return !!((bible.brief || "").trim() || (bible.styleGuide || "").trim() || (bible.cards || []).length);
   }
-  // The active scene as a context layer, or null when there is none or the chat has it switched off.
+  // The scene as a context layer: a scene thread always has its own scene; the project thread has the
+  // active scene unless the chip switched it off.
   function sceneForContext(){
-    return thread && thread.includeScene && activeScene
-      ? { title: activeScene.title || "", text: blocksToText(activeScene.blocks) }
-      : null;
+    if(!thread || !activeScene) return null;
+    var on = thread.scope === "scene" ? activeScene.id === thread.sceneId : thread.includeScene;
+    return on ? { title: activeScene.title || "", text: blocksToText(activeScene.blocks) } : null;
+  }
+  // Summaries of earlier scenes: a scene thread sees the scenes before its own; the project thread sees
+  // every scene except the one already included in full.
+  function storySoFarFor(){
+    if(!thread || !storyChain.length) return [];
+    var list;
+    if(thread.scope === "scene"){
+      var i = -1;
+      for(var k = 0; k < storyChain.length; k++){ if(storyChain[k].id === thread.sceneId){ i = k; break; } }
+      list = i > 0 ? storyChain.slice(0, i) : [];
+    } else {
+      var skip = sceneForContext() && activeScene ? activeScene.id : null;
+      list = storyChain.filter(function(e){ return e.id !== skip; });
+    }
+    return list.filter(function(e){ return (e.summary || "").trim(); }).map(function(e){
+      return { title: e.title || "", chapterTitle: e.chapterTitle || "", summary: e.summary, stale: !!e.stale };
+    });
+  }
+  function refreshChain(){
+    if(!project || !store){ storyChain = []; return Promise.resolve(); }
+    var pid = project.id;
+    return store.listSceneSummaries(pid).then(function(list){
+      if(project && project.id === pid) storyChain = list || [];
+    }, function(){});
+  }
+  function digestBusy(){
+    return !!digest && storyChain.some(function(e){ return digest.isRunning(e.id); });
   }
   function previewContext(){
     // The draft (possibly empty) is the would-be current message; every stored message is history.
-    return assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(),
+    return assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(), storySoFar: storySoFarFor(),
       thread: { messages: messages, summary: thread ? thread.summary : "", summarizedUpTo: thread ? thread.summarizedUpTo : 0 },
       draft: input.value.trim() ? input.value : "" });
   }
   function refreshSceneChip(){
     var chip = $("sceneChip");
-    if(!activeScene || !thread){ chip.hidden = true; chip.classList.remove("on"); return; }
+    if(!activeScene || !thread || thread.scope === "scene"){ chip.hidden = true; chip.classList.remove("on"); return; }
     var on = thread.includeScene !== false;
     $("sceneChipText").textContent = "Scene: " + (activeScene.title || "Untitled scene") + " \u00b7 " + (on ? "On" : "Off");
     chip.classList.toggle("on", on);
@@ -586,7 +642,7 @@ import { initSceneEditor } from "./ui/scene.js";
     chip.hidden = false;
   }
   function toggleSceneInContext(){
-    if(!thread || !activeScene) return;
+    if(!thread || !activeScene || thread.scope === "scene") return;
     thread.includeScene = thread.includeScene === false;
     saveThread(); refreshSceneChip(); updateMeter();
   }
@@ -594,15 +650,17 @@ import { initSceneEditor } from "./ui/scene.js";
     refreshSceneChip();
     if(!thread) return;
     var hasDraft = !!input.value.trim();
-    if(!messages.length && !hasDraft && !bibleHasContent() && !sceneForContext()){ ctxMeter.hidden = true; lastBreakdown = null; return; }
+    if(!messages.length && !hasDraft && !bibleHasContent() && !sceneForContext() && !storySoFarFor().length){ ctxMeter.hidden = true; lastBreakdown = null; return; }
     var b;
     try{ b = previewContext().breakdown; }catch(e){ ctxMeter.hidden = true; return; }
     lastBreakdown = b;
     var L = layerMap(b);
     var html = "~" + fmtK(b.total) + " tokens \u00b7 " + L.cards.cards.length + " cards \u00b7 " + L.summary.folded + " folded";
     if(L.scene && L.scene.included) html += L.scene.truncated ? ' \u00b7 <span class="warn">scene trimmed</span>' : " \u00b7 scene";
+    if(L.story && L.story.count > 0) html += " \u00b7 " + scenesLabel(L.story.count) + " so far";
     if(L.recent.droppedUnsummarized > 0) html += ' \u00b7 <span class="warn">' + L.recent.droppedUnsummarized + " trimmed</span>";
     if(summaryJob) html += " \u00b7 summarizing\u2026";
+    else if(digestBusy()) html += " \u00b7 summarizing scene\u2026";
     if(summaryFailed) html += ' \u00b7 <span class="err">summary failed</span>';
     if(b.overBudget) html += '<span class="warn"> \u00b7 over budget</span>';
     ctxMeterText.innerHTML = html;
@@ -611,6 +669,7 @@ import { initSceneEditor } from "./ui/scene.js";
   }
   var meterTimer = null;
   function updateMeterSoon(){ clearTimeout(meterTimer); meterTimer = setTimeout(updateMeter, 250); }
+  function scenesLabel(n){ return n + (n === 1 ? " scene" : " scenes"); }
   function layerMap(b){
     var out = {};
     b.layers.forEach(function(l){ out[l.key] = l; });
@@ -630,11 +689,17 @@ import { initSceneEditor } from "./ui/scene.js";
           detail = l.count + " messages" + (l.droppedUnsummarized > 0 ? ", " + l.droppedUnsummarized + " trimmed" : "");
         } else if(l.key === "summary"){
           detail = l.folded ? l.folded + " messages folded" : "";
+        } else if(l.key === "story"){
+          if(l.count > 0){
+            detail = scenesLabel(l.count);
+            if(l.dropped > 0) detail += ", " + l.dropped + " earlier omitted";
+            if(l.stale > 0) detail += ", " + l.stale + " may be out of date";
+          }
         } else if(l.key === "scene"){
           if(l.included){
             detail = (l.title || "Untitled scene") + (l.truncated ? " · start trimmed (~" + (l.omittedTokens || 0).toLocaleString() + " tokens left out)" : "");
           } else {
-            detail = activeScene ? "off" : "no scene open";
+            detail = activeScene && thread && thread.scope !== "scene" ? "off" : "no scene open";
           }
         }
         var li = document.createElement("li"); li.className = "layer-row";
@@ -855,6 +920,9 @@ import { initSceneEditor } from "./ui/scene.js";
     document.querySelectorAll("[data-views]").forEach(function(el){
       el.hidden = el.dataset.views.split(" ").indexOf(view) < 0;
     });
+    var label = view === "scene" ? "Scene chat" : "Project chat";
+    $("hdrChat").setAttribute("aria-label", label);
+    $("hdrChat").title = label;
   }
   function setHeader(title, sub){
     $("hdrTitle").textContent = title || "";
@@ -871,8 +939,9 @@ import { initSceneEditor } from "./ui/scene.js";
     threadGen++;
     summaryFailed = false;
     project = null; thread = null; messages = []; activeScene = null; bible = normalizeBible({});
-    lastBreakdown = null; chatOrigin = null;
+    lastBreakdown = null; chatOrigin = null; storyChain = [];
     attachments = []; renderAttachmentChips();
+    refreshProposedBadge();
   }
 
   // Makes pid the open project (no-op apart from a refresh when it already is). Resolves false if missing.
@@ -887,8 +956,74 @@ import { initSceneEditor } from "./ui/scene.js";
     project = p; bible = b; thread = t; messages = thread.messages;
     activeScene = sc && sc.projectId === p.id ? sc : null;
     setMeta({ currentProjectId: p.id });
-    renderHistory(); updateMeter();
+    renderHistory(); updateMeter(); refreshProposedBadge();
     return true;
+  }
+
+  /* ===== Chat threads: one per project, one per scene ===== */
+  // Swaps in another thread: stops the reply and the fold of the old one.
+  function switchThread(t){
+    if(isStreaming && currentAbort) currentAbort.abort();
+    if(summaryJob){ summaryJob.controller.abort(); summaryJob = null; }
+    threadGen++;
+    summaryFailed = false;
+    thread = t; messages = thread.messages;
+    renderHistory(); refreshScope(); updateMeter();
+  }
+  async function loadThreadFor(route){
+    if(!project) return;
+    var t = route.name === "sceneChat" ? await store.getSceneThread(activeScene) : await store.getThread(project);
+    if(!t || !project || t.projectId !== project.id) return;
+    if(thread && thread.id === t.id) return;
+    switchThread(t);
+  }
+  function refreshScope(){
+    var box = $("chatScope"), sBtn = $("chatScopeScene"), pBtn = $("chatScopeProject");
+    var sceneScope = !!thread && thread.scope === "scene";
+    box.hidden = !thread || !(sceneScope || activeScene);
+    sBtn.classList.toggle("on", sceneScope);
+    pBtn.classList.toggle("on", !sceneScope);
+    sBtn.setAttribute("aria-pressed", sceneScope ? "true" : "false");
+    pBtn.setAttribute("aria-pressed", sceneScope ? "false" : "true");
+    sBtn.textContent = "Scene \u00b7 " + ((activeScene && activeScene.title) || "Untitled scene");
+    $("emptyTitle").textContent = sceneScope ? "Scene chat" : "Project chat";
+  }
+  function pickScope(v){
+    if(!project || !thread || currentView !== "chat") return;
+    if(v === "scene" && activeScene && !(thread.scope === "scene" && thread.sceneId === activeScene.id)){
+      replaceRoute({ name:"sceneChat", sceneId: activeScene.id });
+    } else if(v === "project" && thread.scope === "scene"){
+      replaceRoute({ name:"chat", projectId: project.id });
+    }
+  }
+  // Scenes deleted from the outline: their thread goes, and so do queued digests.
+  function onScenesDeleted(ids){
+    if(digest) digest.forget(ids);
+    storyChain = storyChain.filter(function(e){ return ids.indexOf(e.id) < 0; });
+    if(activeScene && ids.indexOf(activeScene.id) >= 0) activeScene = null;
+    if(thread && thread.scope === "scene" && ids.indexOf(thread.sceneId) >= 0){
+      if(isStreaming && currentAbort) currentAbort.abort();
+      if(summaryJob){ summaryJob.controller.abort(); summaryJob = null; }
+      threadGen++;
+      var pid = project && project.id;
+      if(pid) store.getThread(project).then(function(t){
+        if(t && project && project.id === pid && thread && thread.scope === "scene" && ids.indexOf(thread.sceneId) >= 0) switchThread(t);
+      }, function(){});
+    }
+    refreshScope(); updateMeter();
+  }
+  // A scene's summary was written (digest or the summary sheet).
+  function onSceneUpdated(rec){
+    if(!rec) return;
+    if(activeScene && activeScene.id === rec.id){
+      activeScene = Object.assign({}, activeScene, { summary: rec.summary, summaryHash: rec.summaryHash,
+        summaryUpdatedAt: rec.summaryUpdatedAt, summaryModel: rec.summaryModel });
+    }
+    if(project && rec.projectId === project.id){
+      refreshChain().then(updateMeter);
+      if(currentView === "outline" && outline) outline.renderOutline(project.id);
+    }
+    if(summarySheet) summarySheet.refresh(rec);
   }
 
   async function reloadActiveScene(){
@@ -936,6 +1071,10 @@ import { initSceneEditor } from "./ui/scene.js";
       if(chatOrigin && chatOrigin.projectId === route.projectId) return parseRoute(chatOrigin.hash);
       return { name:"outline", projectId: route.projectId };
     }
+    if(route.name === "sceneChat"){
+      if(chatOrigin && project && chatOrigin.projectId === project.id) return parseRoute(chatOrigin.hash);
+      return { name:"scene", sceneId: route.sceneId };
+    }
     if(route.name === "outline") return { name:"library" };
     return null;
   }
@@ -950,8 +1089,11 @@ import { initSceneEditor } from "./ui/scene.js";
     var seq = ++goSeq;
     closeMenu();
     try{
+      var leaving = currentView === "scene" && sceneEditor ? sceneEditor.current() : null;
       if(currentView === "scene" && sceneEditor) await sceneEditor.flush();
       if(seq !== goSeq) return;
+      // Leaving a scene: refresh its digest in the background (skipped when the text is unchanged).
+      if(leaving && digest && !(route.name === "scene" && route.sceneId === leaving.id)) digest.queue(leaving.id);
       if(route.name === "library"){
         await library.renderLibrary();
         if(seq !== goSeq) return;
@@ -968,12 +1110,22 @@ import { initSceneEditor } from "./ui/scene.js";
         } else {
           await reloadActiveScene();
           if(seq !== goSeq) return;
-          setHeader(project.title, "");
-          show("chat");
-          updateMeter(); refreshImport();
-          stick = true; scrollBottom();
-          if(!settings.apiKey && !settingsPrompted){ settingsPrompted = true; setTimeout(openSettings, 350); }
+          await loadThreadFor(route);
+          await refreshChain();
+          if(seq !== goSeq) return;
+          showChat();
         }
+      } else if(route.name === "sceneChat"){
+        var cs = await store.getScene(route.sceneId);
+        if(!cs || !(await openProject(cs.projectId))){ if(seq === goSeq) notFound(); return; }
+        if(seq !== goSeq) return;
+        activeScene = cs;
+        project.lastSceneId = cs.id;
+        try{ await store.setLastScene(project.id, cs.id); }catch(e){}
+        await loadThreadFor(route);
+        await refreshChain();
+        if(seq !== goSeq) return;
+        showChat();
       } else if(route.name === "scene"){
         var s = await store.getScene(route.sceneId);
         if(!s || !(await openProject(s.projectId))){ if(seq === goSeq) notFound(); return; }
@@ -991,10 +1143,18 @@ import { initSceneEditor } from "./ui/scene.js";
     }
   }
 
+  function showChat(){
+    setHeader(project.title, "");
+    show("chat");
+    refreshScope(); updateMeter(); refreshImport();
+    stick = true; scrollBottom();
+    if(!settings.apiKey && !settingsPrompted){ settingsPrompted = true; setTimeout(openSettings, 350); }
+  }
+
   async function routeResolves(r){
     if(!r) return false;
     if(r.name === "library") return true;
-    if(r.name === "scene") return !!(await store.getScene(r.sceneId));
+    if(r.name === "scene" || r.name === "sceneChat") return !!(await store.getScene(r.sceneId));
     return !!(await store.getProject(r.projectId));
   }
   async function landingRoute(meta){
@@ -1037,12 +1197,14 @@ import { initSceneEditor } from "./ui/scene.js";
       { act:"versions", label:"Versions…" },
       { act:"continue", label:"Continue writing" },
       { act:"mode", label: write ? "Switch to Blocks" : "Switch to Write" },
+      { act:"summary", label:"Summary\u2026" },
       { act:"rename", label:"Rename scene" }
     ]);
     if(act === "save-version") sceneEditor.saveVersion();
     else if(act === "versions") sceneEditor.openVersions();
     else if(act === "continue") sceneEditor.runAction("continue", { atEnd: true });
     else if(act === "mode") toggleEditorMode();
+    else if(act === "summary"){ if(summarySheet) summarySheet.open(sc); }
     else if(act === "rename"){
       var t = window.prompt("Scene title", $("sceneTitle").value || sc.title || "");
       if(t == null || !t.trim()) return;
@@ -1112,6 +1274,34 @@ import { initSceneEditor } from "./ui/scene.js";
     });
     store = createStore(db, { uid: uid });
     var meta = await store.init({ legacySystem: settings.system });
+    digest = createDigest({
+      loadScene: async function(id){
+        var sc = await store.getScene(id);
+        if(!sc) return null;
+        var ch = sc.chapterId ? await store.getChapter(sc.chapterId) : null;
+        return { scene: sc, chapterTitle: (ch && ch.title) || "" };
+      },
+      patchScene: store.patchScene,
+      getBible: function(pid){ return project && project.id === pid ? bible : null; },
+      setBible: function(pid, b){
+        if(!project || project.id !== pid) return;
+        bible = b;
+        bibleChanged();
+      },
+      getSettings: function(){ return { apiKey: settings.apiKey, utilityModel: settings.utilityModel || DEFAULT_UTILITY_MODEL }; },
+      callApi: callApi, uid: uid, now: Date.now,
+      onSceneUpdated: onSceneUpdated,
+      onStateChange: function(){ updateMeter(); if(summarySheet) summarySheet.refresh(); },
+      onError: function(id, err, o){
+        if(!(o && o.force)) return;
+        var m = (err && err.message) || "unknown error";
+        toast(/API key/.test(m) ? m : "Summary failed: " + m);
+      }
+    });
+    summarySheet = initSummarySheet({ $: $, store: store, toast: toast, digest: digest, hashText: hashText,
+      flush: function(){ return sceneEditor ? sceneEditor.flush() : Promise.resolve(); },
+      onSaved: onSceneUpdated,
+      confirm: function(msg){ return window.confirm(msg); } });
 
     initMenu({ $: $ });
     library = initLibrary({ $: $, store: store, toast: toast, openMenu: openMenu, go: navigate,
@@ -1128,7 +1318,8 @@ import { initSceneEditor } from "./ui/scene.js";
         });
       },
       onSceneRenamed: function(sid){ if(activeScene && activeScene.id === sid) store.getScene(sid).then(function(s){ if(s && activeScene && activeScene.id === s.id) activeScene = s; }); },
-      onScenesDeleted: function(ids){ if(activeScene && ids.indexOf(activeScene.id) >= 0){ activeScene = null; updateMeter(); } } });
+      onScenesDeleted: onScenesDeleted,
+      openSummary: function(sc){ if(summarySheet) summarySheet.open(sc); } });
     sceneEditor = initSceneEditor({ $: $, store: store, toast: toast, uid: uid,
       openMenu: openMenu, callApi: callApi,
       getSettings: function(){ return settings; },
@@ -1145,8 +1336,12 @@ import { initSceneEditor } from "./ui/scene.js";
     $("hdrChat").addEventListener("click", function(){
       if(!project) return;
       chatOrigin = { hash: formatRoute(currentRoute), projectId: project.id };
-      navigate({ name:"chat", projectId: project.id });
+      var sc = currentView === "scene" && sceneEditor ? sceneEditor.current() : null;
+      if(sc) navigate({ name:"sceneChat", sceneId: sc.id });
+      else navigate({ name:"chat", projectId: project.id });
     });
+    $("chatScopeScene").addEventListener("click", function(){ pickScope("scene"); });
+    $("chatScopeProject").addEventListener("click", function(){ pickScope("project"); });
     $("sceneChip").addEventListener("click", toggleSceneInContext);
     $("openBible").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
     $("openSettings").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
@@ -1171,10 +1366,10 @@ import { initSceneEditor } from "./ui/scene.js";
     renderPresets($("presets"), setModel); renderPresets($("utilityPresets"), setUtility);
     renderStarters();
     installIcons();
-    initBibleUI({ $: $, uid: uid, toast: toast,
+    bibleUI = initBibleUI({ $: $, uid: uid, toast: toast,
       getBible: function(){ return bible; },
       setBible: function(b){ bible = b; },
-      onChange: function(){ saveBible(); updateMeter(); } });
+      onChange: function(){ saveBible(); updateMeter(); refreshProposedBadge(); } });
 
     sendBtn.addEventListener("click", function(){
       if(isStreaming){ if(currentAbort) currentAbort.abort(); }

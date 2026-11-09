@@ -1,9 +1,7 @@
+import { DEFAULT_API_URL, FALLBACK_PROXY_URL, reasoningConfig, applyReasoning, validEndpoint, streamChat } from "./api.js";
+
 (function(){
   /* ===== Constants ===== */
-  var DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-  // Personal proxy (proxy/cloudflare-worker.js) used automatically when the browser's direct
-  // request to OpenRouter is blocked before it gets a response (e.g. by Cloudflare bot protection).
-  var FALLBACK_PROXY_URL = "https://ownchat-proxy.ownchat-serhii.workers.dev/api/v1/chat/completions";
   var LS_SET = "ownchat.write.settings.v1";
   var LS_HIST = "ownchat.write.history.v1";
   var LEGACY_LS_SET = "orchat.settings.v1";
@@ -73,23 +71,6 @@
   function thinkLabel(t){ return t==="off"?"no thinking":t==="medium"?"med-think":t==="high"?"high-think":"max-think"; }
   function updatePill(){ pillText.textContent = shortModel(settings.model)+" · "+thinkLabel(settings.thinking); }
 
-  // thinking -> reasoning budget + overall output cap. max_tokens must exceed the reasoning budget.
-  function reasoningConfig(level){
-    if(level==="off")    return null;
-    if(level==="medium") return { budget:8000,  max:24000 };
-    if(level==="high")   return { budget:16000, max:40000 };
-    return { budget:32000, max:64000 };
-  }
-  // Anthropic models take a token budget; others (Grok, OpenAI, ...) take an effort level.
-  function applyReasoning(body, model, level){
-    var rc = reasoningConfig(level);
-    if(!rc){ body.max_tokens = 16000; return; }
-    body.max_tokens = rc.max;
-    if(/^anthropic\//i.test(model || "")) body.reasoning = { max_tokens: rc.budget };
-    else body.reasoning = { effort: level === "medium" ? "medium" : "high" };
-  }
-  function apiUrl(){ return (settings.endpoint && settings.endpoint.trim()) || DEFAULT_API_URL; }
-  function validEndpoint(u){ return !u || /^https:\/\//i.test(u) || /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(u); }
 
   /* ===== Markdown ===== */
   if(window.marked && marked.setOptions){ marked.setOptions({ gfm:true, breaks:true }); }
@@ -283,14 +264,26 @@
   }
 
   /* ===== Streaming (OpenRouter, OpenAI-compatible SSE) ===== */
+  // The direct call was blocked and the proxy worked: remember the proxy for next time.
+  function persistFallback(result){
+    if(result && result.usedFallback && !result.aborted && settings.endpoint !== FALLBACK_PROXY_URL){
+      settings.endpoint = FALLBACK_PROXY_URL; saveSettings();
+      toast("Direct OpenRouter calls are blocked here. Switched to your proxy (Settings \u2192 Advanced).");
+    }
+    return result;
+  }
+  // Generic call (used by non-chat requests such as summaries); key and endpoint come from settings.
+  function callApi(opts){
+    var o = Object.assign({}, opts, { apiKey: settings.apiKey, endpoint: settings.endpoint });
+    return streamChat(o).then(persistFallback);
+  }
+
   function streamCompletion(api, els, state){
     var started = Date.now();
     var controller = new AbortController();
     currentAbort = controller;
-    var body = { model: settings.model, messages: api, stream: true };
-    applyReasoning(body, settings.model, settings.thinking);
 
-    var firstContentAt = null;
+    var firstContent = true;
     function startTimer(){
       if(els._timer) return;
       els.think.hidden = false;
@@ -299,112 +292,44 @@
       els._timer = setInterval(function(){ els.thinkTime.textContent = fmtDur(Date.now() - started); }, 100);
     }
 
-    var url = apiUrl();
-    var retried = false;
-    var usedFallback = false;
-    function post(){
-      return fetch(url, {
-        method: "POST",
-        headers: {
-          "Authorization": "Bearer " + settings.apiKey,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      });
-    }
-
-    function handle(res){
-      if(!res.ok){
-        return res.text().then(function(t){
-          var m = "Request failed (" + res.status + ").";
-          try{ var j = JSON.parse(t); m = (j.error && j.error.message) || j.message || m; }
-          catch(e){ if(t) m = t.slice(0, 300); }
-          // Some models reject the reasoning parameter; nothing has streamed yet, so retry once without it.
-          if(res.status === 400 && body.reasoning && !retried && /reason|effort|unsupported|not supported/i.test(m + " " + t)){
-            retried = true;
-            delete body.reasoning;
-            return post().then(handle);
+    return streamChat({
+      apiKey: settings.apiKey,
+      endpoint: settings.endpoint,
+      model: settings.model,
+      messages: api,
+      thinking: settings.thinking,
+      signal: controller.signal,
+      onReasoning: function(delta, full){
+        if(!els._timer) startTimer();
+        state.thinking = full;
+        els._pendingThink = state.thinking;
+        scheduleRender(els);
+      },
+      onContent: function(delta, full, meta){
+        if(firstContent){
+          firstContent = false;
+          state.thinkMs = meta.thinkMs;
+          if(els._timer){ clearInterval(els._timer); els._timer = null; }
+          if(state.thinking){
+            els.think.classList.remove("thinking","open");
+            els.thinkLabel.textContent = "Thought for " + fmtDur(state.thinkMs);
+            els.thinkTime.textContent = "";
           }
-          throw new Error(m);
-        });
-      }
-      if(!res.body) throw new Error("No response stream from server.");
-      var reader = res.body.getReader();
-      var dec = new TextDecoder();
-      var buf = "";
-
-      function pump(){
-        return reader.read().then(function(r){
-          if(r.done) return;
-          buf += dec.decode(r.value, { stream: true });
-          var nl;
-          while((nl = buf.indexOf("\n")) !== -1){
-            var line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-            var s = line.trim();
-            if(!s || s.charAt(0) === ":") continue;        // blank / SSE keep-alive comment
-            if(s.slice(0,5) !== "data:") continue;
-            var data = s.slice(5).trim();
-            if(data === "[DONE]"){ buf = ""; continue; }
-            var j; try{ j = JSON.parse(data); }catch(e){ continue; }
-            if(j.error) throw new Error((j.error && j.error.message) || "Stream error.");
-            var d = (j.choices && j.choices[0] && j.choices[0].delta) || {};
-            var r2 = "";
-            if(typeof d.reasoning === "string") r2 = d.reasoning;
-            else if(Array.isArray(d.reasoning_details)){
-              r2 = d.reasoning_details.map(function(x){ return x.text || x.summary || x.content || ""; }).join("");
-            }
-            if(r2){
-              if(!els._timer) startTimer();
-              state.thinking += r2;
-              els._pendingThink = state.thinking;
-              scheduleRender(els);
-            }
-            if(typeof d.content === "string" && d.content){
-              if(firstContentAt === null){
-                firstContentAt = Date.now();
-                state.thinkMs = firstContentAt - started;
-                if(els._timer){ clearInterval(els._timer); els._timer = null; }
-                if(state.thinking){
-                  els.think.classList.remove("thinking","open");
-                  els.thinkLabel.textContent = "Thought for " + fmtDur(state.thinkMs);
-                  els.thinkTime.textContent = "";
-                }
-              }
-              state.content += d.content;
-              els._pendingContent = state.content;
-              scheduleRender(els);
-            }
-          }
-          return pump();
-        });
-      }
-      return pump();
-    }
-
-    function blocked(e){ return e instanceof TypeError && !(controller.signal && controller.signal.aborted); }
-
-    return post().then(handle).catch(function(e){
-      // Direct call never got a response: retry once through the personal proxy. Nothing has streamed yet.
-      if(blocked(e) && FALLBACK_PROXY_URL && url !== FALLBACK_PROXY_URL){
-        url = FALLBACK_PROXY_URL; usedFallback = true;
-        return post().then(handle);
-      }
-      throw e;
-    }).catch(function(e){
-      if(e && e.name === "AbortError"){ state.aborted = true; return; }
-      if(blocked(e)){
-        throw new Error("Request was blocked before it reached OpenRouter (CORS preflight failed)" + (usedFallback ? ", and the proxy could not be reached either" : "") + ". Try another network, or set a proxy endpoint in Settings \u2192 Advanced. (" + (e.message || String(e)) + ")");
-      }
-      throw e;
-    }).then(function(){
+        }
+        state.content = full;
+        els._pendingContent = state.content;
+        scheduleRender(els);
+      },
+      onUsage: function(usage){ state.usage = usage; }
+    }).then(function(result){
       if(els._timer){ clearInterval(els._timer); els._timer = null; }
       currentAbort = null;
-      if(usedFallback && !state.aborted && settings.endpoint !== FALLBACK_PROXY_URL){
-        settings.endpoint = FALLBACK_PROXY_URL; saveSettings();
-        toast("Direct OpenRouter calls are blocked here. Switched to your proxy (Settings \u2192 Advanced).");
-      }
-      if(!state.thinkMs && state.thinking) state.thinkMs = Date.now() - started;
+      state.content = result.content;
+      state.thinking = result.thinking;
+      state.thinkMs = result.thinkMs;
+      state.aborted = result.aborted;
+      state.usage = result.usage;
+      persistFallback(result);
       return state;
     });
   }

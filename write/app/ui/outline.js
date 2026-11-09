@@ -6,8 +6,10 @@ import { hashText } from "../util.js";
 export function initOutline(deps){
   var $ = deps.$, store = deps.store, toast = deps.toast, openMenu = deps.openMenu;
   var listEl = $("outlineList"), emptyEl = $("outlineEmpty"), addChapterBtn = $("outlineAddChapter");
+  var headTitleEl = $("outlineHeadTitle"), headMetaEl = $("outlineHeadMeta");
   var pid = null;
   var renderSeq = 0;
+  var currentId = null;      // the scene highlighted in the sidebar; survives re-renders
 
   function guard(p){
     return p.catch(function(e){ toast("Could not update the outline" + (e && e.message ? ": " + e.message : "")); });
@@ -19,7 +21,11 @@ export function initOutline(deps){
     var outline = await store.getOutline(pid);
     if(seq !== renderSeq) return outline;
     listEl.innerHTML = "";
-    if(!outline) return null;
+    if(!outline){
+      if(headTitleEl) headTitleEl.textContent = "";
+      if(headMetaEl) headMetaEl.textContent = "";
+      return null;
+    }
     var chapters = outline.chapters;
     emptyEl.hidden = chapters.length > 0;
     addChapterBtn.hidden = chapters.length === 0;
@@ -38,6 +44,7 @@ export function initOutline(deps){
         var row = el("button", "scene-row");
         row.type = "button";
         row.setAttribute("data-id", sc.id);
+        if(currentId && sc.id === currentId) row.classList.add("current");
         var main = el("span", "row-main");
         main.appendChild(el("span", "row-title", sc.title || "Untitled scene"));
         var sum = (sc.summary || "").trim();
@@ -57,8 +64,18 @@ export function initOutline(deps){
       listEl.appendChild(box);
     });
     outline.words = total;
+    if(headTitleEl) headTitleEl.textContent = (outline.project && outline.project.title) || "Untitled project";
+    if(headMetaEl) headMetaEl.textContent = words(total);
     if(deps.onRendered) deps.onRendered(outline);
     return outline;
+  }
+
+  // Highlights the row of scene id (null clears it); remembered for later renders.
+  function setCurrent(id){
+    currentId = id || null;
+    listEl.querySelectorAll("button.scene-row[data-id]").forEach(function(row){
+      row.classList.toggle("current", !!currentId && row.getAttribute("data-id") === currentId);
+    });
   }
 
   async function addChapter(){
@@ -167,5 +184,5 @@ export function initOutline(deps){
   addChapterBtn.addEventListener("click", addChapter);
   $("outlineEmptyAdd").addEventListener("click", addChapter);
   // #hdrMenu is bound once in main.js, which calls projectMenu() while the outline is shown.
-  return { renderOutline: renderOutline, projectMenu: projectMenu };
+  return { renderOutline: renderOutline, projectMenu: projectMenu, setCurrent: setCurrent };
 }

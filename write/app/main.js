@@ -4,6 +4,7 @@ import { normalizeBible, proposeFacts, listProposed, cardNames } from "./bible.j
 import { assembleContext } from "./context.js";
 import { SUMMARY_DEFAULTS, planFold, runFold } from "./summaries.js";
 import { openDb, requestPersistence } from "./db.js";
+import { isIOS, isStandalone } from "./storage.js";
 import { createStore, emptyThread } from "./store.js";
 import { createDigest } from "./digest.js";
 import { blocksToText } from "./scene.js";
@@ -15,6 +16,7 @@ import { initLibrary } from "./ui/library.js";
 import { initOutline } from "./ui/outline.js";
 import { initSceneEditor } from "./ui/scene.js";
 import { initSummarySheet } from "./ui/summary.js";
+import { initStorageUI } from "./ui/storage.js";
 
 (function(){
   /* ===== Constants ===== */
@@ -64,7 +66,9 @@ import { initSummarySheet } from "./ui/summary.js";
   var pendingThink = "max";
   var storyChain = [];        // store.listSceneSummaries() of the open project, outline order
   var digest = null;          // background scene summariser (digest.js)
-  var bibleUI = null, summarySheet = null;
+  var bibleUI = null, summarySheet = null, storageUI = null;
+  var HISTORY_WINDOW = 60;    // messages rendered when a thread loads; "Show earlier messages" adds as many again
+  var historyShown = HISTORY_WINDOW;
 
   /* ===== Elements ===== */
   function $(id){ return document.getElementById(id); }
@@ -73,6 +77,7 @@ import { initSummarySheet } from "./ui/summary.js";
   var attachWrap=$("attachWrap"), pillText=$("pillText");
   var settingsOverlay=$("settingsOverlay"), setKey=$("setKey"), setModel=$("setModel"),
       setUtility=$("setUtility"), setEndpoint=$("setEndpoint"), thinkSeg=$("thinkSeg"), toastEl=$("toast");
+  var showEarlierBtn=$("showEarlier");
   var ctxMeter=$("ctxMeter"), ctxMeterText=$("ctxMeterText"), ctxOverlay=$("ctxOverlay");
   var reader=$("reader"), readerBody=$("readerBody"), readerTitle=$("readerTitle");
   var currentReaderMd = "";
@@ -505,9 +510,14 @@ import { initSummarySheet } from "./ui/summary.js";
     toast("Imported " + arr.length + " messages");
   }
 
-  function renderHistory(){
+  // Renders the last historyShown messages; opts.keepScroll keeps the visible messages in place
+  // (used when earlier ones are revealed above them) instead of scrolling to the bottom.
+  function renderHistory(opts){
+    var keep = !!(opts && opts.keepScroll);
+    var beforeH = scroller.scrollHeight, beforeTop = scroller.scrollTop;
     list.innerHTML = "";
-    for(var i=0;i<messages.length;i++){
+    var from = Math.max(0, messages.length - historyShown);
+    for(var i=from;i<messages.length;i++){
       var m = messages[i];
       if(m.role === "user"){ buildUser(m); }
       else {
@@ -517,8 +527,16 @@ import { initSummarySheet } from "./ui/summary.js";
         bindAssistantActions(els, m);
       }
     }
+    showEarlierBtn.hidden = from === 0;
     refreshEmpty(); refreshImport();
-    requestAnimationFrame(scrollBottom);
+    if(keep){ stick = false; scroller.scrollTop = beforeTop + (scroller.scrollHeight - beforeH); }
+    else requestAnimationFrame(scrollBottom);
+  }
+  function resetHistoryWindow(){ historyShown = HISTORY_WINDOW; }
+  function showEarlier(){
+    if(messages.length <= historyShown) return;
+    historyShown += HISTORY_WINDOW;
+    renderHistory({ keepScroll: true });
   }
 
   function newChat(){
@@ -535,6 +553,7 @@ import { initSummarySheet } from "./ui/summary.js";
     thread.sceneId = thread.scope === "scene" ? old.sceneId : null;
     thread.includeScene = old.includeScene !== false;
     messages = thread.messages;
+    resetHistoryWindow();
     saveThread();
     renderHistory(); updateMeter();
   }
@@ -764,6 +783,7 @@ import { initSummarySheet } from "./ui/summary.js";
     setEndpoint.value = settings.endpoint || "";
     setThinkSeg(settings.thinking);
     settingsOverlay.classList.add("open");
+    if(storageUI) storageUI.refreshSettings().catch(function(){});
   }
   function closeSettings(){ settingsOverlay.classList.remove("open"); }
   function saveSettingsForm(){
@@ -855,7 +875,7 @@ import { initSummarySheet } from "./ui/summary.js";
     app.style.transform = "translateY(" + vv.offsetTop + "px)";
     var kbOpen = (window.innerHeight - vv.height) > 120;
     document.body.classList.toggle("kb-open", kbOpen);
-    if(stick && currentView === "chat") scrollBottom();
+    if(stick && chatShown()) scrollBottom();
   }
 
   /* ===== Home-screen icon + manifest (generated, keeps the file standalone) ===== */
@@ -913,9 +933,39 @@ import { initSummarySheet } from "./ui/summary.js";
     routeSaveTimer = setTimeout(function(){ setMeta({ lastRoute: hash }); }, 400);
   }
 
+  // Desktop layout: outline sidebar from 1024px, scene chat beside the editor ("split") from 1280px.
+  var mqWide = window.matchMedia("(min-width:1024px)");
+  var mqSplit = window.matchMedia("(min-width:1280px)");
+  function syncLayout(){ document.body.dataset.layout = mqWide.matches ? "wide" : "narrow"; }
+  function onLayoutChange(){
+    syncLayout();
+    if(currentRoute) go(currentRoute);
+  }
+  function onMq(mq){
+    if(mq.addEventListener) mq.addEventListener("change", onLayoutChange);
+    else if(mq.addListener) mq.addListener(onLayoutChange);
+  }
+  function sceneShown(){ return currentView === "scene" || currentView === "split"; }
+  function chatShown(){ return currentView === "chat" || currentView === "split"; }
+  function outlineShown(){
+    return currentView === "outline" || (mqWide.matches && (currentView === "scene" || currentView === "chat" || currentView === "split"));
+  }
+  // Sidebar refresh after autosaves: at most once every 3 s, trailing.
+  var sidebarTimer = null;
+  function refreshSidebarSoon(){
+    if(sidebarTimer) return;
+    sidebarTimer = setTimeout(function(){
+      sidebarTimer = null;
+      if(project && outline && outlineShown()) outline.renderOutline(project.id);
+    }, 3000);
+  }
+
   function show(view){
     currentView = view;
-    Object.keys(VIEW_IDS).forEach(function(v){ $(VIEW_IDS[v]).classList.toggle("active", v === view); });
+    Object.keys(VIEW_IDS).forEach(function(v){
+      var on = v === view || (view === "split" && (v === "scene" || v === "chat"));
+      $(VIEW_IDS[v]).classList.toggle("active", on);
+    });
     document.body.dataset.view = view;
     document.querySelectorAll("[data-views]").forEach(function(el){
       el.hidden = el.dataset.views.split(" ").indexOf(view) < 0;
@@ -940,6 +990,7 @@ import { initSummarySheet } from "./ui/summary.js";
     summaryFailed = false;
     project = null; thread = null; messages = []; activeScene = null; bible = normalizeBible({});
     lastBreakdown = null; chatOrigin = null; storyChain = [];
+    resetHistoryWindow();
     attachments = []; renderAttachmentChips();
     refreshProposedBadge();
   }
@@ -968,6 +1019,7 @@ import { initSummarySheet } from "./ui/summary.js";
     threadGen++;
     summaryFailed = false;
     thread = t; messages = thread.messages;
+    resetHistoryWindow();
     renderHistory(); refreshScope(); updateMeter();
   }
   async function loadThreadFor(route){
@@ -989,7 +1041,7 @@ import { initSummarySheet } from "./ui/summary.js";
     $("emptyTitle").textContent = sceneScope ? "Scene chat" : "Project chat";
   }
   function pickScope(v){
-    if(!project || !thread || currentView !== "chat") return;
+    if(!project || !thread || !chatShown()) return;
     if(v === "scene" && activeScene && !(thread.scope === "scene" && thread.sceneId === activeScene.id)){
       replaceRoute({ name:"sceneChat", sceneId: activeScene.id });
     } else if(v === "project" && thread.scope === "scene"){
@@ -1021,7 +1073,7 @@ import { initSummarySheet } from "./ui/summary.js";
     }
     if(project && rec.projectId === project.id){
       refreshChain().then(updateMeter);
-      if(currentView === "outline" && outline) outline.renderOutline(project.id);
+      if(outlineShown() && outline) outline.renderOutline(project.id);
     }
     if(summarySheet) summarySheet.refresh(rec);
   }
@@ -1089,20 +1141,25 @@ import { initSummarySheet } from "./ui/summary.js";
     var seq = ++goSeq;
     closeMenu();
     try{
-      var leaving = currentView === "scene" && sceneEditor ? sceneEditor.current() : null;
-      if(currentView === "scene" && sceneEditor) await sceneEditor.flush();
+      var wasScene = sceneShown();
+      var leaving = wasScene && sceneEditor ? sceneEditor.current() : null;
+      if(wasScene && sceneEditor) await sceneEditor.flush();
       if(seq !== goSeq) return;
       // Leaving a scene: refresh its digest in the background (skipped when the text is unchanged).
-      if(leaving && digest && !(route.name === "scene" && route.sceneId === leaving.id)) digest.queue(leaving.id);
+      // Staying on it (the scene route, or the split with its own chat) is not leaving.
+      var stays = leaving && route.sceneId === leaving.id && (route.name === "scene" || (route.name === "sceneChat" && mqSplit.matches));
+      if(leaving && digest && !stays) digest.queue(leaving.id);
       if(route.name === "library"){
-        await library.renderLibrary();
+        var projects = await library.renderLibrary();
         if(seq !== goSeq) return;
+        if(storageUI) storageUI.refreshNotice(projects).catch(function(){});
         setHeader("Projects", "");
         show("library");
       } else if(route.name === "outline" || route.name === "chat"){
         if(!(await openProject(route.projectId))){ if(seq === goSeq) notFound(); return; }
         if(seq !== goSeq) return;
         if(route.name === "outline"){
+          outline.setCurrent(null);
           var o = await outline.renderOutline(project.id);
           if(seq !== goSeq) return;
           setHeader(project.title, wordsLabel(o ? o.words : 0));
@@ -1113,7 +1170,8 @@ import { initSummarySheet } from "./ui/summary.js";
           await loadThreadFor(route);
           await refreshChain();
           if(seq !== goSeq) return;
-          showChat();
+          if(!(await renderSidebar(null, seq))) return;
+          showChat("chat");
         }
       } else if(route.name === "sceneChat"){
         var cs = await store.getScene(route.sceneId);
@@ -1125,13 +1183,22 @@ import { initSummarySheet } from "./ui/summary.js";
         await loadThreadFor(route);
         await refreshChain();
         if(seq !== goSeq) return;
-        showChat();
+        var split = mqSplit.matches;
+        if(split){
+          var open = sceneEditor.current();
+          if(!open || open.id !== cs.id) await sceneEditor.open(cs.id);
+          if(seq !== goSeq) return;
+          updateModeLabel();
+        }
+        if(!(await renderSidebar(cs.id, seq))) return;
+        showChat(split ? "split" : "chat");
       } else if(route.name === "scene"){
         var s = await store.getScene(route.sceneId);
         if(!s || !(await openProject(s.projectId))){ if(seq === goSeq) notFound(); return; }
         if(seq !== goSeq) return;
         await sceneEditor.open(s.id);
         if(seq !== goSeq) return;
+        if(!(await renderSidebar(s.id, seq))) return;
         setHeader(project.title, "");
         updateModeLabel();
         show("scene");
@@ -1143,9 +1210,18 @@ import { initSummarySheet } from "./ui/summary.js";
     }
   }
 
-  function showChat(){
+  // Wide layout: the outline sidebar for the open project, with sceneId highlighted. Resolves false
+  // when a newer navigation started meanwhile.
+  async function renderSidebar(sceneId, seq){
+    if(!mqWide.matches || !project) return true;
+    outline.setCurrent(sceneId);
+    await outline.renderOutline(project.id);
+    return seq === goSeq;
+  }
+
+  function showChat(view){
     setHeader(project.title, "");
-    show("chat");
+    show(view === "split" ? "split" : "chat");
     refreshScope(); updateMeter(); refreshImport();
     stick = true; scrollBottom();
     if(!settings.apiKey && !settingsPrompted){ settingsPrompted = true; setTimeout(openSettings, 350); }
@@ -1214,6 +1290,7 @@ import { initSummarySheet } from "./ui/summary.js";
         if(rec){
           sceneEditor.renamed(rec);
           if(activeScene && activeScene.id === rec.id) activeScene = Object.assign({}, activeScene, { title: rec.title });
+          if(outlineShown() && project) outline.renderOutline(project.id);
         }
       }catch(e){ toast("Could not rename the scene"); }
     }
@@ -1221,7 +1298,7 @@ import { initSummarySheet } from "./ui/summary.js";
   function headerMenu(){
     var v = document.body.dataset.view;
     if(v === "outline") outline.projectMenu();
-    else if(v === "scene") sceneMenu();
+    else if(v === "scene" || v === "split") sceneMenu();
   }
 
   /* ===== Export / import ===== */
@@ -1231,7 +1308,10 @@ import { initSummarySheet } from "./ui/summary.js";
       var data = await store.loadProjectData(pid);
       if(!data) throw new Error("Project not found");
       if(kind === "manuscript") await exportManuscript(data, { toast: toast });
-      else await exportBundle(data, { toast: toast });
+      else{
+        var how = await exportBundle(data, { toast: toast });
+        if(how !== "cancelled" && storageUI) await storageUI.noteExported(pid);
+      }
     }catch(e){
       toast((e && e.message) ? e.message : "Export failed");
     }
@@ -1307,7 +1387,15 @@ import { initSummarySheet } from "./ui/summary.js";
     library = initLibrary({ $: $, store: store, toast: toast, openMenu: openMenu, go: navigate,
       exportProject: exportProject, importFile: importFile, deleteProject: deleteProject,
       onRenamed: function(pid){ if(project && project.id === pid) store.getProject(pid).then(function(p){ if(p && project && project.id === p.id) project = p; }); } });
-    outline = initOutline({ $: $, store: store, toast: toast, openMenu: openMenu, go: navigate,
+    // In the split a scene row keeps the chat pane open: it opens that scene's chat beside its editor.
+    function outlineGo(route, opts){
+      if(currentView === "split" && route && route.name === "scene" && project){
+        chatOrigin = { hash: formatRoute(route), projectId: project.id };
+        return navigate({ name:"sceneChat", sceneId: route.sceneId }, opts);
+      }
+      return navigate(route, opts);
+    }
+    outline = initOutline({ $: $, store: store, toast: toast, openMenu: openMenu, go: outlineGo,
       exportProject: exportProject, deleteProject: deleteProject, openSettings: openSettings,
       onRendered: function(o){
         if(project && o.project && o.project.id === project.id && currentView === "outline") setHeader(project.title, wordsLabel(o.words));
@@ -1327,7 +1415,14 @@ import { initSummarySheet } from "./ui/summary.js";
       prompt: function(msg, def){ return window.prompt(msg, def == null ? "" : def); },
       confirm: function(msg){ return window.confirm(msg); },
       onOpened: function(s){ if(project && s.projectId === project.id){ activeScene = s; project.lastSceneId = s.id; } },
-      onSaved: function(rec){ if(activeScene && activeScene.id === rec.id) activeScene = rec; } });
+      onSaved: function(rec){
+        if(activeScene && activeScene.id === rec.id) activeScene = rec;
+        if(outlineShown()) refreshSidebarSoon();
+      } });
+    storageUI = initStorageUI({ $: $, store: store, toast: toast, requestPersistence: requestPersistence,
+      exportProject: exportProject, now: Date.now,
+      env: { ios: isIOS(navigator.userAgent, navigator.platform, navigator.maxTouchPoints),
+             standalone: isStandalone(navigator, window.matchMedia.bind(window)) } });
 
     $("hdrBack").addEventListener("click", goBack);
     $("hdrMenu").addEventListener("click", headerMenu);
@@ -1336,7 +1431,7 @@ import { initSummarySheet } from "./ui/summary.js";
     $("hdrChat").addEventListener("click", function(){
       if(!project) return;
       chatOrigin = { hash: formatRoute(currentRoute), projectId: project.id };
-      var sc = currentView === "scene" && sceneEditor ? sceneEditor.current() : null;
+      var sc = sceneShown() && sceneEditor ? sceneEditor.current() : null;
       if(sc) navigate({ name:"sceneChat", sceneId: sc.id });
       else navigate({ name:"chat", projectId: project.id });
     });
@@ -1345,6 +1440,7 @@ import { initSummarySheet } from "./ui/summary.js";
     $("sceneChip").addEventListener("click", toggleSceneInContext);
     $("openBible").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
     $("openSettings").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
+    onMq(mqWide); onMq(mqSplit);
     window.addEventListener("hashchange", function(){
       noteNav(location.hash, false);
       go(parseRoute(location.hash));
@@ -1361,7 +1457,22 @@ import { initSummarySheet } from "./ui/summary.js";
   }
 
   /* ===== Wire up ===== */
+  // Escape closes the topmost open sheet (or the reader) through its own backdrop-click handler.
+  // The generic menu handles Escape itself.
+  function onEscape(e){
+    if(e.key !== "Escape" || e.defaultPrevented) return;
+    var top = null, topZ = -Infinity;
+    document.querySelectorAll(".overlay.open").forEach(function(o){
+      var z = parseInt(getComputedStyle(o).zIndex, 10) || 0;
+      if(z >= topZ){ top = o; topZ = z; }
+    });
+    if(reader.classList.contains("open") && (!top || 50 >= topZ)){ closeReader(); return; }
+    if(!top || top.id === "menuOverlay") return;
+    top.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  }
+
   function init(){
+    syncLayout();
     loadSettings(); updatePill();
     renderPresets($("presets"), setModel); renderPresets($("utilityPresets"), setUtility);
     renderStarters();
@@ -1413,6 +1524,8 @@ import { initSummarySheet } from "./ui/summary.js";
       p.then(function(){ if(ctxOverlay.classList.contains("open")) renderCtxSheet(); });
     });
     $("newChat").addEventListener("click", newChat);
+    showEarlierBtn.addEventListener("click", showEarlier);
+    document.addEventListener("keydown", onEscape);
     $("readerClose").addEventListener("click", closeReader);
     $("readerExport").addEventListener("click", function(){ exportMarkdown(currentReaderMd, slugFilename(currentReaderMd)); });
 

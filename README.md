@@ -151,7 +151,9 @@ Features so far:
 - AI actions on the selection: Rewrite, Tighten, Expand, Tone, Custom and
   Continue. The result streams into a preview with a word-level diff; Accept
   replaces the paragraphs, Retry takes an extra instruction, Reject discards.
-  Actions use the writing model and reasoning level from Settings.
+  Actions use the writing model from Settings but always run without extended
+  thinking, so the preview answers quickly; while nothing has arrived yet the
+  sheet shows "Waiting for the model…" (or "Thinking…") with the seconds elapsed.
 - "To scene" on a chat reply puts the reply into the open scene: replace the
   editor's selection, append it, or replace the whole scene (a version is saved).
 - Versions: accepting an AI change snapshots the previous text; "Save version"

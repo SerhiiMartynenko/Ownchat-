@@ -200,7 +200,10 @@ Deviations from the design above:
 - Phase 3: the blocks surface is the default scene view, and a "Write" mode keeps the
   plain textarea for long typing; both edit the same draft and share one autosave.
   Rewrite requests are built separately from the chat context (rules + style guide +
-  brief, then matched cards) and use at most 2 cache breakpoints. Versions are kept
+  brief, then matched cards) and use at most 2 cache breakpoints. Action requests
+  run with thinking off whatever the chat's reasoning level is: a rewrite should
+  answer in seconds, and the preview shows an elapsed-time status until the first
+  word arrives. Versions are kept
   on the device only, capped at 30 per scene, and are not in the export bundle.
 - Phase 4: scene threads are stored as `ts-<sceneId>` with `scope:"scene"`; the
   chat opens as a full view (route `#/s/<id>/chat`), not a sheet. Scene summaries are

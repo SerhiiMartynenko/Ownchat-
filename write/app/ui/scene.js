@@ -8,7 +8,7 @@
 // applyText puts a chat reply into the scene through the same apply path as Accept.
 import { textToBlocks, blocksToText, countWords, splitParagraphs } from "../scene.js";
 import { applyReplacement, insertAfter, spliceSelection, windowAround, insertionWindow, normalizeRange, selectionWindow } from "../editor.js";
-import { ACTIONS, TONES, buildActionRequest, cleanProse, looksLikeChat } from "../rewrite.js";
+import { ACTIONS, TONES, ACTION_THINKING, buildActionRequest, cleanProse, looksLikeChat } from "../rewrite.js";
 import { initBlocks } from "./blocks.js";
 import { initPreview } from "./preview.js";
 import { initVersions } from "./versions.js";
@@ -395,8 +395,9 @@ export function initSceneEditor(deps){
       onStop: function(){ if(job === my) my.controller.abort(); },
       onReject: function(){ if(job === my) stopJob(); preview.close(); }
     });
-    deps.callApi({ model: settings.model, messages: req.messages, thinking: settings.thinking,
+    deps.callApi({ model: settings.model, messages: req.messages, thinking: ACTION_THINKING,
       signal: my.controller.signal,
+      onReasoning: function(){ if(job === my) preview.noteReasoning(); },
       onContent: function(delta, full){
         if(job !== my) return;
         my.partial = full;

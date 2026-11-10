@@ -6,6 +6,10 @@ import { isAnthropic } from "./api.js";
 
 export const REWRITE_DEFAULTS = { cardBudget:4000, windowBudget:3000 };
 
+// Editing actions (rewrite, tighten, expand, tone, custom, continue) always run without extended thinking so
+// the preview answers fast; the chat keeps the user's thinking setting.
+export const ACTION_THINKING = "off";
+
 export const TONES = ["Darker","Lighter","More tense","More intimate","More lyrical","Plainer"];
 
 // The e2e mock recognises an action request by this phrase; keep it in RULES.

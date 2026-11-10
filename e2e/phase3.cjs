@@ -44,7 +44,7 @@ const P = [
   'She thought of Tomas and the unanswered letter.',
   'A lamp flickered in the tower window.'
 ];
-const SETTINGS = { apiKey: 'k', model: 'other/x', thinking: 'off', system: '', endpoint: '', editorMode: 'blocks' };
+const SETTINGS = { apiKey: 'k', model: 'other/x', thinking: 'max', system: '', endpoint: '', editorMode: 'blocks' };
 
 async function run(browser) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -212,9 +212,15 @@ async function run(browser) {
   const streamingSeen = await page.isVisible('#previewStop');
   const acceptDisabled = await page.locator('#previewAccept').isDisabled();
   check('D. while streaming Stop is visible and Accept disabled', streamingSeen && acceptDisabled, [streamingSeen, acceptDisabled]);
+  // Progress line while no text has arrived yet (the slow mock waits 1500 ms before replying).
+  const waitingSeen = await page.waitForFunction(() => /Waiting for the model… \d+s/.test(document.getElementById('previewStats').textContent || ''), null, { timeout: 1200, polling: 50 }).then(() => true, () => false);
+  check('D. stats read "Waiting for the model… Ns" before the first words', waitingSeen && (await page.isVisible('#previewStop')), await page.textContent('#previewStats'));
+  // "Thinking… Ns" (preview.noteReasoning) is not covered here: route.fulfill delivers the whole SSE body at
+  // once, so the mock cannot send a reasoning delta, pause, then stream content; the preview API is module-private.
   await waitDone();
   mockMode = 'rewrite';
   let rq = lastReq();
+  check('D. action request has no reasoning and max_tokens 16000 even with thinking "max"', !('reasoning' in rq.body) && rq.body.max_tokens === 16000, { reasoning: rq.body.reasoning, max_tokens: rq.body.max_tokens });
   check('D. one request sent', reqs.length === n0 + 1, reqs.length - n0);
   const st = sysText(rq.body), ut = userText(rq.body);
   check('D. exactly 2 messages (system + user), stream:true', rq.body.messages.length === 2 && rq.body.messages[0].role === 'system' && rq.body.messages[1].role === 'user' && rq.body.stream === true, rq.body.messages.map(m => m.role));
@@ -259,6 +265,7 @@ async function run(browser) {
   check('E. anthropic system content is an array of <= 2 parts with cache_control', Array.isArray(sc0) && sc0.length >= 1 && sc0.length <= 2 && sc0.every(p => p.type === 'text' && p.cache_control), sc0);
   check('E. tighten instruction sent', /Tighten/.test(instrOf(rq.body)), instrOf(rq.body));
   check('E. request model is anthropic/x', rq.body.model === 'anthropic/x');
+  check('E. anthropic action request has no reasoning and max_tokens 16000', !('reasoning' in rq.body) && rq.body.max_tokens === 16000, { reasoning: rq.body.reasoning, max_tokens: rq.body.max_tokens });
   await reject();
   await setModel('other/x');
   check('E. model restored to other/x', JSON.parse(await page.evaluate(() => localStorage.getItem('ownchat.write.settings.v1'))).model === 'other/x');
@@ -330,6 +337,9 @@ async function run(browser) {
   await page.click('#previewStop');
   await page.waitForSelector('#previewStop', { state: 'hidden', timeout: 4000 });
   check('J. Stop hides and warn says "Stopped"', (await page.textContent('#previewWarn')).includes('Stopped'), await page.textContent('#previewWarn'));
+  check('J. stopped before any text: body empty, no crossed-out original', (await page.locator('#previewBody .del').count()) === 0 && (await page.textContent('#previewBody')) === '', await page.textContent('#previewBody'));
+  check('J. warn reads "Stopped before any text arrived. Retry."', (await page.isVisible('#previewWarn')) && (await page.textContent('#previewWarn')) === 'Stopped before any text arrived. Retry.', await page.textContent('#previewWarn'));
+  check('J. Accept disabled, Diff toggle hidden, Retry visible', (await page.locator('#previewAccept').isDisabled()) && !(await page.isVisible('#previewDiffToggle')) && (await page.isVisible('#previewRetry')), [await page.locator('#previewAccept').isDisabled(), await page.isVisible('#previewDiffToggle'), await page.isVisible('#previewRetry')]);
   await reject();
   await clearSel();
   mockMode = 'rewrite';

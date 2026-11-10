@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  ACTIONS, ACTION_ORDER, TONES, REWRITE_DEFAULTS, RULES_SENTINEL,
+  ACTIONS, ACTION_ORDER, ACTION_THINKING, TONES, REWRITE_DEFAULTS, RULES_SENTINEL,
   buildActionRequest, cleanProse, looksLikeChat
 } from "./rewrite.js";
 import { newCard } from "./bible.js";
@@ -199,4 +199,8 @@ test("looksLikeChat", () => {
   assert.equal(looksLikeChat("Here is the rewritten text:\n\nThe rain fell."), false); // preamble stripped first
   // Known false positive, accepted: first-person prose starting with "I " is flagged (the preview only warns).
   assert.equal(looksLikeChat("I walked to the door and listened."), true);
+});
+
+test("editing actions run without extended thinking", () => {
+  assert.equal(ACTION_THINKING, "off");
 });

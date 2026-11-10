@@ -12,8 +12,17 @@ export function initPreview(deps){
     instruction: $("previewInstruction"), reject: $("previewReject"), retry: $("previewRetry"),
     stop: $("previewStop"), accept: $("previewAccept")
   };
-  var cur = null;    // {o, text, streaming, diff}
+  var cur = null;    // {o, text, streaming, diff, reasoning}
   var raf = 0;
+  var startedAt = 0;
+  var ticker = 0;    // interval that shows progress while waiting for the first words
+
+  function stopTicker(){ if(ticker){ clearInterval(ticker); ticker = 0; } }
+  function tick(){
+    if(!cur || !cur.streaming || cur.text) return;
+    var secs = Math.floor((Date.now() - startedAt) / 1000);
+    els.stats.textContent = secs < 1 ? "" : (cur.reasoning ? "Thinking… " : "Waiting for the model… ") + secs + "s";
+  }
 
   function setWarn(msg){ els.warn.textContent = msg || ""; els.warn.hidden = !msg; }
 
@@ -55,7 +64,7 @@ export function initPreview(deps){
     var canRetry = !!(cur && cur.o.onRetry);
     els.retry.hidden = !canRetry;
     els.instruction.hidden = !canRetry;
-    els.toggle.hidden = !(cur && cur.o.showDiff && !streaming);
+    els.toggle.hidden = !(cur && cur.o.showDiff && !streaming && cur.text && cur.text.trim());
     els.toggle.textContent = cur && cur.diff ? "Clean" : "Diff";
   }
 
@@ -63,7 +72,9 @@ export function initPreview(deps){
   // onStop(), onReject()}. Opens (or restarts) the sheet in the streaming state.
   function open(o){
     if(raf){ cancelAnimationFrame(raf); raf = 0; }
-    cur = { o: o || {}, text: "", streaming: true, diff: !!(o && o.showDiff) };
+    stopTicker();
+    cur = { o: o || {}, text: "", streaming: true, diff: !!(o && o.showDiff), reasoning: false };
+    startedAt = Date.now();
     els.title.textContent = cur.o.title || "Preview";
     els.accept.textContent = cur.o.acceptLabel || "Accept";
     if(cur.o.instruction != null) els.instruction.value = cur.o.instruction;
@@ -71,6 +82,14 @@ export function initPreview(deps){
     renderBody();
     syncButtons();
     els.overlay.classList.add("open");
+    ticker = setInterval(tick, 250);
+  }
+
+  // The model is reasoning before it writes: the waiting line says so.
+  function noteReasoning(){
+    if(!cur || !cur.streaming) return;
+    cur.reasoning = true;
+    if(!cur.text) tick();
   }
 
   function setStreaming(text){
@@ -88,8 +107,11 @@ export function initPreview(deps){
   function finish(r){
     if(!cur) return;
     if(raf){ cancelAnimationFrame(raf); raf = 0; }
+    stopTicker();
     cur.streaming = false;
     cur.text = String((r && r.text) || "");
+    // Nothing arrived: show an empty body (not the original crossed out) next to the warning.
+    if(!cur.text.trim()) cur.diff = false;
     setWarn(r && r.warn);
     renderBody();
     els.body.scrollTop = 0;
@@ -99,6 +121,7 @@ export function initPreview(deps){
   function error(msg){
     if(!cur) return;
     if(raf){ cancelAnimationFrame(raf); raf = 0; }
+    stopTicker();
     cur.streaming = false;
     cur.text = "";
     cur.diff = false;
@@ -110,6 +133,7 @@ export function initPreview(deps){
 
   function close(){
     if(raf){ cancelAnimationFrame(raf); raf = 0; }
+    stopTicker();
     cur = null;
     els.overlay.classList.remove("open");
     els.instruction.blur();
@@ -143,5 +167,6 @@ export function initPreview(deps){
     if(e.key === "Enter"){ e.preventDefault(); els.retry.click(); }
   });
 
-  return { open: open, setStreaming: setStreaming, finish: finish, error: error, close: close, isOpen: isOpen };
+  return { open: open, setStreaming: setStreaming, finish: finish, error: error, close: close, isOpen: isOpen,
+    noteReasoning: noteReasoning };
 }

@@ -1,8 +1,8 @@
 /* Streaming chat client for OpenRouter-style (OpenAI-compatible SSE) endpoints. DOM-free. */
 
 export var DEFAULT_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-// Personal proxy (proxy/cloudflare-worker.js) used automatically when the browser's direct
-// request to OpenRouter is blocked before it gets a response (e.g. by Cloudflare bot protection).
+// Personal proxy (proxy/cloudflare-worker.js). streamChat switches between it and direct OpenRouter
+// automatically when one path is blocked (no response / CORS preflight refused, or a non-API 403).
 export var FALLBACK_PROXY_URL = "https://ownchat-proxy.ownchat-serhii.workers.dev/api/v1/chat/completions";
 
 export function isAnthropic(model){ return /^anthropic\//i.test(model || ""); }
@@ -52,8 +52,90 @@ export function createSSEParser(onJson){
   };
 }
 
-function blockedMessage(usedFallback, e){
-  return "Request was blocked before it reached OpenRouter (CORS preflight failed)" + (usedFallback ? ", and the proxy could not be reached either" : "") + ". Try another network, or set a proxy endpoint in Settings → Advanced. (" + (e.message || String(e)) + ")";
+// Reads a response body as JSON; returns the parsed object only if it carries an error/message field.
+function apiJson(text){
+  try{ var j = JSON.parse(text); }catch(e){ return null; }
+  return (j && typeof j === "object" && (j.error || j.message)) ? j : null;
+}
+function isAbort(e, signal){ return (e && e.name === "AbortError") || !!(signal && signal.aborted); }
+
+// Path label for messages: "Direct" for OpenRouter, "Proxy" for the fallback worker, else "Endpoint".
+export function pathLabel(url, fallbackUrl){
+  if(url === DEFAULT_API_URL) return "Direct";
+  if(url === (fallbackUrl === undefined ? FALLBACK_PROXY_URL : fallbackUrl)) return "Proxy";
+  return "Endpoint";
+}
+function preflightReason(e){ return "CORS preflight failed (" + ((e && e.message) || String(e)) + ")"; }
+
+// attempts: [{label, reason}] -> one-line message shown when every path was blocked.
+export function describeBlocked(attempts){
+  return "OpenRouter could not be reached from this network. " +
+    attempts.map(function(a){ return a.label + ": " + a.reason + "."; }).join(" ") +
+    " Try Settings → Advanced → Test connection, or another network.";
+}
+
+// Order of paths to try: the configured one first, then the alternates.
+export function candidatePaths(endpoint, fallbackUrl){
+  var start = (endpoint || "").trim() || DEFAULT_API_URL;
+  var alts;
+  if(start === DEFAULT_API_URL) alts = [fallbackUrl];
+  else if(start === fallbackUrl) alts = [DEFAULT_API_URL];
+  else alts = [fallbackUrl, DEFAULT_API_URL];
+  var out = [start];
+  alts.forEach(function(u){ if(u && out.indexOf(u) === -1) out.push(u); });
+  return out;
+}
+
+function BlockedError(reason, cause){
+  var e = new Error(reason); e.blocked = true; e.reason = reason; e.cause = cause; return e;
+}
+
+// Cheap reachability check: an empty model is rejected by OpenRouter before any generation,
+// but the request goes through the same CORS preflight as a real message.
+export function probeEndpoint(o){
+  o = o || {};
+  var fetchImpl = o.fetchImpl || globalThis.fetch;
+  var url = o.url;
+  return Promise.resolve().then(function(){
+    return fetchImpl(url, {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + (o.apiKey || ""),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ model: "", messages: [] }),
+      signal: o.signal
+    });
+  }).then(function(res){
+    return res.text().catch(function(){ return ""; }).then(function(t){
+      var status = res.status;
+      if(apiJson(t) || res.ok){
+        return { url: url, ok: true, status: status, reason: status === 401 ? "reachable, but the key was rejected" : "reachable" };
+      }
+      if(status === 403) return { url: url, ok: false, status: 403, reason: "refused (403)" };
+      return { url: url, ok: false, status: status, reason: "error " + status };
+    });
+  }, function(e){
+    if(e && e.name === "AbortError") return { url: url, ok: false, status: 0, reason: "cancelled" };
+    if(e instanceof TypeError) return { url: url, ok: false, status: 0, reason: preflightReason(e) };
+    return { url: url, ok: false, status: 0, reason: (e && e.message) || String(e) };
+  });
+}
+
+// Probes the custom endpoint (if any), direct OpenRouter and the proxy in parallel.
+export function probeAll(o){
+  o = o || {};
+  var fallbackUrl = o.fallbackUrl === undefined ? FALLBACK_PROXY_URL : o.fallbackUrl;
+  var ep = (o.endpoint || "").trim();
+  var list = [];
+  if(ep && ep !== DEFAULT_API_URL && ep !== fallbackUrl) list.push({ label: "Endpoint", url: ep });
+  list.push({ label: "Direct", url: DEFAULT_API_URL });
+  if(fallbackUrl) list.push({ label: "Proxy", url: fallbackUrl });
+  return Promise.all(list.map(function(p){
+    return probeEndpoint({ url: p.url, apiKey: o.apiKey, fetchImpl: o.fetchImpl, signal: o.signal }).then(function(r){
+      return { label: p.label, url: p.url, ok: r.ok, status: r.status, reason: r.reason };
+    });
+  }));
 }
 
 export function streamChat(opts){
@@ -68,12 +150,13 @@ export function streamChat(opts){
   applyReasoning(body, model, opts.thinking || "off");
   if(typeof opts.maxTokens === "number") body.max_tokens = opts.maxTokens;
 
-  var result = { content: "", thinking: "", thinkMs: 0, aborted: false, usage: null, usedFallback: false, url: (opts.endpoint && opts.endpoint.trim()) || DEFAULT_API_URL };
+  var paths = candidatePaths(opts.endpoint, fallbackUrl);
+  var result = { content: "", thinking: "", thinkMs: 0, aborted: false, usage: null, usedFallback: false, url: paths[0], startUrl: paths[0] };
   var firstContentAt = null;
   var retried = false;
 
   function post(){
-    return fetchImpl(result.url, {
+    return Promise.resolve().then(function(){ return fetchImpl(result.url, {
       method: "POST",
       headers: {
         "Authorization": "Bearer " + opts.apiKey,
@@ -81,6 +164,10 @@ export function streamChat(opts){
       },
       body: JSON.stringify(body),
       signal: signal
+    }); }).catch(function(e){
+      // No response at all (CORS preflight refused, network block): this path is blocked.
+      if(e instanceof TypeError && !isAbort(e, signal)) throw BlockedError(preflightReason(e), e);
+      throw e;
     });
   }
 
@@ -116,7 +203,10 @@ export function streamChat(opts){
     if(!res.ok){
       return res.text().then(function(t){
         var m = "Request failed (" + res.status + ").";
-        try{ var j = JSON.parse(t); m = (j.error && j.error.message) || j.message || m; }
+        var aj = apiJson(t);
+        // A 403 that is not the API's own JSON error is a block page (WAF, proxy origin check): try another path.
+        if(res.status === 403 && !aj) throw BlockedError("refused (403)");
+        try{ var j = JSON.parse(t); m = (j && ((j.error && j.error.message) || j.message)) || m; }
         catch(e){ if(t) m = t.slice(0, 300); }
         // Some models reject the reasoning parameter; nothing has streamed yet, so retry once without it.
         if(res.status === 400 && body.reasoning && !retried && /reason|effort|unsupported|not supported/i.test(m + " " + t)){
@@ -141,18 +231,22 @@ export function streamChat(opts){
     return pump();
   }
 
-  function blocked(e){ return e instanceof TypeError && !(signal && signal.aborted); }
+  var attempts = [];
+  function attempt(i){
+    result.url = paths[i];
+    return Promise.resolve().then(post).then(handle).catch(function(e){
+      if(!(e && e.blocked) || isAbort(e, signal)) throw e;
+      // Nothing has streamed yet (the failure came before the body was read), so another path is safe.
+      attempts.push({ label: pathLabel(paths[i], fallbackUrl), reason: e.reason });
+      if(i + 1 < paths.length) return attempt(i + 1);
+      throw new Error(describeBlocked(attempts));
+    });
+  }
 
-  return Promise.resolve().then(post).then(handle).catch(function(e){
-    // Direct call never got a response: retry once through the fallback proxy. Nothing has streamed yet.
-    if(blocked(e) && fallbackUrl && result.url !== fallbackUrl){
-      result.url = fallbackUrl; result.usedFallback = true;
-      return post().then(handle);
-    }
-    throw e;
-  }).catch(function(e){
-    if(e && e.name === "AbortError"){ result.aborted = true; return; }
-    if(blocked(e)) throw new Error(blockedMessage(result.usedFallback, e));
+  return attempt(0).then(function(){
+    result.usedFallback = result.url !== result.startUrl;
+  }, function(e){
+    if(isAbort(e, signal)){ result.aborted = true; return; }
     throw e;
   }).then(function(){
     if(!result.thinkMs && result.thinking) result.thinkMs = Date.now() - started;

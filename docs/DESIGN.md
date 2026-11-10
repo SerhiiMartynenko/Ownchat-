@@ -146,7 +146,14 @@ as today.
 
 - `app/db.js`: IndexedDB wrapper and schema/migrations.
 - `app/context.js`: layered context assembly and token budgeting.
-- `app/api.js`: streaming client and proxy fallback (moved from index.html).
+- `app/api.js`: streaming client and endpoint fallback (moved from index.html). The
+  request tries the configured path first (custom endpoint, else direct
+  OpenRouter) and, when that path is blocked, the remaining known paths in turn
+  (proxy, direct). "Blocked" is a CORS failure with no response or a readable
+  403 whose body is not an OpenRouter JSON error; a JSON 403 (moderation) is
+  surfaced as is. The path that worked is saved as the endpoint so later
+  requests skip the blocked one. `probeEndpoint`/`probeAll` back the Settings →
+  Advanced "Test connection" button with a free empty-model POST per path.
 - `app/summaries.js`: scene and thread summaries, fact extraction (utility model).
 - `app/editor.js`: block editor, selection, rewrite preview and diff.
 - `app/bible.js`, `app/chat.js`, `app/outline.js`, `app/export.js`.

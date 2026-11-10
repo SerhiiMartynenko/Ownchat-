@@ -359,6 +359,7 @@
 
   /* ---------- Phase 5: notice, history window, hidden helpers ---------- */
   .hint[hidden],#storageProtect[hidden]{display:none !important}
+  #connResult{white-space:pre-line}
   .notice{margin:12px auto 0;width:calc(100% - 24px);max-width:var(--maxw);padding:12px 14px;border-radius:14px;background:var(--surface);border:1px solid var(--accent)}
   .notice[hidden]{display:none}
   .notice p{margin:0 0 10px;font-size:14px;line-height:1.45}
@@ -555,7 +556,9 @@
     <h3 class="sheet-sub">Advanced</h3>
     <label for="setEndpoint">API endpoint (optional proxy)</label>
     <input type="url" id="setEndpoint" placeholder="https://openrouter.ai/api/v1/chat/completions" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <p class="hint">Leave empty to call OpenRouter directly. Set this only if your browser is blocked (see README → Troubleshooting).</p>
+    <p class="hint">Leave empty to call OpenRouter directly. If one path is blocked on your network the app switches to the other automatically; use Test connection to see which paths work here.</p>
+    <button id="setTestConn" class="ghost-btn btn-block" type="button">Test connection</button>
+    <p class="hint" id="connResult" hidden></p>
     <div class="sheet-actions">
       <button class="btn-secondary" id="setCancel" type="button">Cancel</button>
       <button class="btn-primary" id="setSave" type="button">Save</button>

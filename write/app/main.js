@@ -1,4 +1,4 @@
-import { DEFAULT_API_URL, FALLBACK_PROXY_URL, reasoningConfig, applyReasoning, validEndpoint, streamChat } from "./api.js";
+import { DEFAULT_API_URL, FALLBACK_PROXY_URL, reasoningConfig, applyReasoning, validEndpoint, streamChat, probeAll } from "./api.js";
 import { uid, hashText } from "./util.js";
 import { normalizeBible, proposeFacts, listProposed, cardNames } from "./bible.js";
 import { assembleContext } from "./context.js";
@@ -78,7 +78,7 @@ import { initStorageUI } from "./ui/storage.js";
   var input=$("input"), sendBtn=$("send"), attachBtn=$("attachBtn"), fileInput=$("fileInput");
   var attachWrap=$("attachWrap"), pillText=$("pillText");
   var settingsOverlay=$("settingsOverlay"), setKey=$("setKey"), setModel=$("setModel"),
-      setUtility=$("setUtility"), setEndpoint=$("setEndpoint"), thinkSeg=$("thinkSeg"), toastEl=$("toast");
+      setUtility=$("setUtility"), setEndpoint=$("setEndpoint"), connResult=$("connResult"), thinkSeg=$("thinkSeg"), toastEl=$("toast");
   var showEarlierBtn=$("showEarlier");
   var ctxMeter=$("ctxMeter"), ctxMeterText=$("ctxMeterText"), ctxOverlay=$("ctxOverlay");
   var reader=$("reader"), readerBody=$("readerBody"), readerTitle=$("readerTitle");
@@ -355,11 +355,17 @@ import { initStorageUI } from "./ui/storage.js";
   }
 
   /* ===== Streaming (OpenRouter, OpenAI-compatible SSE) ===== */
-  // The direct call was blocked and the proxy worked: remember the proxy for next time.
+  // The configured path was blocked and another one worked: remember the working path for next time.
   function persistFallback(result){
-    if(result && result.usedFallback && !result.aborted && settings.endpoint !== FALLBACK_PROXY_URL){
-      settings.endpoint = FALLBACK_PROXY_URL; saveSettings();
-      toast("Direct OpenRouter calls are blocked here. Switched to your proxy (Settings \u2192 Advanced).");
+    if(result && result.usedFallback && !result.aborted){
+      var ep = result.url === DEFAULT_API_URL ? "" : result.url;
+      if(settings.endpoint !== ep){
+        settings.endpoint = ep; saveSettings();
+        toast(ep === FALLBACK_PROXY_URL
+          ? "Direct OpenRouter calls are blocked here. Switched to your proxy (Settings \u2192 Advanced)."
+          : ep === "" ? "The proxy is blocked here. Switched to direct OpenRouter calls."
+          : "Switched to " + ep + " (Settings \u2192 Advanced).");
+      }
     }
     return result;
   }
@@ -858,11 +864,26 @@ import { initStorageUI } from "./ui/storage.js";
     setModel.value = settings.model;
     setUtility.value = settings.utilityModel || DEFAULT_UTILITY_MODEL;
     setEndpoint.value = settings.endpoint || "";
+    connResult.textContent = ""; connResult.hidden = true;
     setThinkSeg(settings.thinking);
     settingsOverlay.classList.add("open");
     if(storageUI) storageUI.refreshSettings().catch(function(){});
   }
   function closeSettings(){ settingsOverlay.classList.remove("open"); }
+  // Settings -> Advanced -> Test connection: reports which paths answer from this network; changes nothing.
+  function testConnection(){
+    var key = setKey.value.trim();
+    connResult.hidden = false;
+    if(!key){ connResult.textContent = "Add your OpenRouter API key first"; return; }
+    var btn = $("setTestConn");
+    btn.disabled = true;
+    connResult.textContent = "Testing\u2026";
+    probeAll({ endpoint: setEndpoint.value.trim(), apiKey: key }).then(function(rs){
+      connResult.textContent = rs.map(function(r){ return r.label + ": " + r.reason; }).join("\n");
+    }, function(e){
+      connResult.textContent = "Test failed: " + ((e && e.message) || String(e));
+    }).then(function(){ btn.disabled = false; });
+  }
   function saveSettingsForm(){
     var ep = setEndpoint.value.trim();
     if(!validEndpoint(ep)){ setEndpoint.value = settings.endpoint || ""; toast("Endpoint must start with https://"); return; }
@@ -1589,6 +1610,7 @@ import { initStorageUI } from "./ui/storage.js";
     $("emptyKey").addEventListener("click", openSettings);
     $("setCancel").addEventListener("click", closeSettings);
     $("setSave").addEventListener("click", saveSettingsForm);
+    $("setTestConn").addEventListener("click", testConnection);
     settingsOverlay.addEventListener("click", function(e){ if(e.target === settingsOverlay) closeSettings(); });
     $("toggleKey").addEventListener("click", function(){
       var show = setKey.type === "password";

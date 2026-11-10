@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSSEParser, streamChat, applyReasoning, isAnthropic, validEndpoint, DEFAULT_API_URL } from "./api.js";
+import { createSSEParser, streamChat, applyReasoning, isAnthropic, validEndpoint, DEFAULT_API_URL, FALLBACK_PROXY_URL, probeEndpoint, probeAll, describeBlocked } from "./api.js";
 
 function sseResponse(chunks, init){
   var enc = new TextEncoder();
@@ -141,13 +141,115 @@ test("TypeError falls back to the proxy and reports usedFallback", async () => {
   assert.equal(r.content, "ok");
 });
 
+var PROXY = "https://proxy.test/v1";
+var typeErr = () => { throw new TypeError("Failed to fetch"); };
+var html403 = () => new Response("<html>blocked</html>", { status: 403, headers: { "Content-Type": "text/html" } });
+
 test("blocked on both direct and proxy throws the descriptive error", async () => {
-  var f = fakeFetch([() => { throw new TypeError("Failed to fetch"); }]);
-  await assert.rejects(
-    streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: "https://proxy.test/v1" }),
-    /blocked before it reached OpenRouter \(CORS preflight failed\), and the proxy could not be reached either/
-  );
+  var f = fakeFetch([typeErr, html403]);
+  var err = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
   assert.equal(f.calls.length, 2);
+  assert.equal(err.message,
+    "OpenRouter could not be reached from this network. Direct: CORS preflight failed (Failed to fetch). Proxy: refused (403). Try Settings → Advanced → Test connection, or another network.");
+});
+
+test("describeBlocked formats one line", () => {
+  assert.equal(describeBlocked([{ label: "Direct", reason: "CORS preflight failed (Preflight response is not successful. Status code: 403)" }, { label: "Proxy", reason: "refused (403)" }]),
+    "OpenRouter could not be reached from this network. Direct: CORS preflight failed (Preflight response is not successful. Status code: 403). Proxy: refused (403). Try Settings → Advanced → Test connection, or another network.");
+});
+
+test("non-JSON 403 on direct is retried on the proxy", async () => {
+  var f = fakeFetch([html403, okStream]);
+  var r = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY });
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.calls[0].url, DEFAULT_API_URL);
+  assert.equal(f.calls[1].url, PROXY);
+  assert.equal(r.usedFallback, true);
+  assert.equal(r.url, PROXY);
+  assert.equal(r.startUrl, DEFAULT_API_URL);
+  assert.equal(r.content, "ok");
+});
+
+test("JSON 403 from the API is surfaced, not retried", async () => {
+  var f = fakeFetch([() => new Response(JSON.stringify({ error: { message: "flagged" } }), { status: 403 }), okStream]);
+  await assert.rejects(streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }), /flagged/);
+  assert.equal(f.calls.length, 1);
+});
+
+test("endpoint set to the proxy and proxy blocked: direct is tried", async () => {
+  var f = fakeFetch([typeErr, okStream]);
+  var r = await streamChat({ apiKey: "k", endpoint: PROXY, model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY });
+  assert.deepEqual(f.calls.map(c => c.url), [PROXY, DEFAULT_API_URL]);
+  assert.equal(r.usedFallback, true);
+  assert.equal(r.url, DEFAULT_API_URL);
+  assert.equal(r.startUrl, PROXY);
+});
+
+test("proxy 'Origin not allowed' plain 403 counts as blocked", async () => {
+  var f = fakeFetch([() => new Response("Origin not allowed", { status: 403 }), okStream]);
+  var r = await streamChat({ apiKey: "k", endpoint: PROXY, model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY });
+  assert.equal(r.url, DEFAULT_API_URL);
+  assert.equal(r.usedFallback, true);
+});
+
+test("custom endpoint blocked: proxy then direct, in order", async () => {
+  var f = fakeFetch([typeErr, typeErr, okStream]);
+  var r = await streamChat({ apiKey: "k", endpoint: "https://mine.test/x", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY });
+  assert.deepEqual(f.calls.map(c => c.url), ["https://mine.test/x", PROXY, DEFAULT_API_URL]);
+  assert.equal(r.url, DEFAULT_API_URL);
+  assert.equal(r.usedFallback, true);
+  f.calls.forEach(c => assert.deepEqual(c.init.headers, { "Authorization": "Bearer k", "Content-Type": "application/json" }));
+});
+
+test("all paths blocked lists each with its reason", async () => {
+  var f = fakeFetch([html403, typeErr, html403]);
+  var err = await streamChat({ apiKey: "k", endpoint: "https://mine.test/x", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(f.calls.length, 3);
+  assert.match(err.message, /Endpoint: refused \(403\)\. Proxy: CORS preflight failed \(Failed to fetch\)\. Direct: refused \(403\)\./);
+});
+
+test("fallbackUrl null: no retry, message names the direct path", async () => {
+  var f = fakeFetch([typeErr, okStream]);
+  await assert.rejects(streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: null }), /Direct: CORS preflight failed/);
+  assert.equal(f.calls.length, 1);
+});
+
+test("probeEndpoint classifies responses and sends a minimal request", async () => {
+  var cases = [
+    [() => new Response(JSON.stringify({ error: { message: "No auth credentials found", code: 401 } }), { status: 401 }), { ok: true, status: 401, reason: "reachable, but the key was rejected" }],
+    [() => new Response(JSON.stringify({ error: { message: "model is required" } }), { status: 400 }), { ok: true, status: 400, reason: "reachable" }],
+    [html403, { ok: false, status: 403, reason: "refused (403)" }],
+    [typeErr, { ok: false, status: 0, reason: "CORS preflight failed (Failed to fetch)" }],
+    [() => new Response("{}", { status: 200 }), { ok: true, status: 200, reason: "reachable" }],
+    [() => new Response("bad gateway", { status: 502 }), { ok: false, status: 502, reason: "error 502" }]
+  ];
+  for(var [h, want] of cases){
+    var f = fakeFetch([h]);
+    var r = await probeEndpoint({ url: "https://p.test/x", apiKey: "k", fetchImpl: f });
+    assert.deepEqual(r, Object.assign({ url: "https://p.test/x" }, want));
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].init.method, "POST");
+    assert.deepEqual(f.calls[0].init.headers, { "Authorization": "Bearer k", "Content-Type": "application/json" });
+    assert.equal(f.calls[0].init.body, JSON.stringify({ model: "", messages: [] }));
+  }
+});
+
+test("probeAll probes endpoint, direct and proxy with labels", async () => {
+  var f = async (url, init) => {
+    if(url === DEFAULT_API_URL) throw new TypeError("Failed to fetch");
+    if(url === PROXY) return new Response(JSON.stringify({ error: { message: "bad key" } }), { status: 401 });
+    return new Response("nope", { status: 403 });
+  };
+  var r = await probeAll({ endpoint: " https://mine.test/x ", apiKey: "k", fetchImpl: f, fallbackUrl: PROXY });
+  assert.deepEqual(r.map(x => [x.label, x.url, x.ok, x.reason]), [
+    ["Endpoint", "https://mine.test/x", false, "refused (403)"],
+    ["Direct", DEFAULT_API_URL, false, "CORS preflight failed (Failed to fetch)"],
+    ["Proxy", PROXY, true, "reachable, but the key was rejected"]
+  ]);
+  var r2 = await probeAll({ endpoint: PROXY, apiKey: "k", fetchImpl: f, fallbackUrl: PROXY });
+  assert.deepEqual(r2.map(x => x.label), ["Direct", "Proxy"]);
+  var r3 = await probeAll({ endpoint: "", apiKey: "k", fetchImpl: f });
+  assert.deepEqual(r3.map(x => [x.label, x.url]), [["Direct", DEFAULT_API_URL], ["Proxy", FALLBACK_PROXY_URL]]);
 });
 
 test("abort resolves with aborted:true", async () => {

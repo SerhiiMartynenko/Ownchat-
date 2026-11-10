@@ -60,6 +60,19 @@ Settings → Advanced so later messages go straight to the proxy. Clear that
 field to go back to direct calls. The proxy only accepts requests from this
 site's origin and never stores the key.
 
+**The writing tool (`/write/`) goes further.** It keeps a list of paths
+(direct OpenRouter and the proxy, plus a custom endpoint if you set one) and
+tries the next one whenever the current one is blocked, in either direction:
+if the saved endpoint is the proxy and the proxy is blocked on today's network,
+it falls back to direct calls and clears the field again. A readable `403`
+whose body is not an OpenRouter JSON error (a bot-protection page, or the
+proxy's "Origin not allowed") counts as blocked too. When every path fails the
+message names each one with its reason, e.g. *"Direct: CORS preflight failed
+(…Status code: 403). Proxy: refused (403)."* **Settings → Advanced → Test
+connection** sends a free, empty probe over each path and reports which ones
+reach OpenRouter from your current network, so you can see what is blocked
+without changing anything.
+
 **If the proxy is blocked too, remedies in order:**
 
 1. Try another network (e.g. mobile data instead of Wi-Fi, or vice versa), or

@@ -134,7 +134,7 @@ async function run(browser) {
     run: async ({ page, stored }) => {
       await toChatAndSend(page, 'hello');
       const err = await page.evaluate(() => { const e = document.querySelectorAll('#list .msg.assistant .err'); return e.length ? e[e.length - 1].textContent : ''; });
-      check('C. error bubble names both paths', /could not be reached from this network/.test(err) && /Direct: CORS preflight failed/.test(err) && /Proxy: refused \(403\)/.test(err), err);
+      check('C. error bubble names both paths', /could not be reached from this network/.test(err) && /Direct: CORS preflight failed/.test(err) && /Proxy: refused \(403: Origin not allowed\)/.test(err), err);
       check('C. retry button shown', (await page.locator('#list .msg.assistant [data-a=retry]').count()) === 1);
       check('C. stored endpoint unchanged', (await stored()).endpoint === '', await stored());
     }

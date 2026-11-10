@@ -73,6 +73,13 @@ connection** sends a free, empty probe over each path and reports which ones
 reach OpenRouter from your current network, so you can see what is blocked
 without changing anything.
 
+**A 403 that is not a network block.** When a request does reach OpenRouter
+and is refused there, the error now carries the server's own words and the
+status, for example *"Key limit exceeded (HTTP 403) via proxy"* or *"Provider
+returned error · provider: … · raw: … (HTTP 403)"*. A reply with no recognisable
+message is shown raw: *"Request failed (HTTP 403: …)"*. That text, not the
+network, is what to act on.
+
 **If the proxy is blocked too, remedies in order:**
 
 1. Try another network (e.g. mobile data instead of Wi-Fi, or vice versa), or

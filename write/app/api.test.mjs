@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createSSEParser, streamChat, applyReasoning, isAnthropic, validEndpoint, DEFAULT_API_URL, FALLBACK_PROXY_URL, probeEndpoint, probeAll, describeBlocked } from "./api.js";
+import { createSSEParser, streamChat, applyReasoning, isAnthropic, validEndpoint, DEFAULT_API_URL, FALLBACK_PROXY_URL, probeEndpoint, probeAll, describeBlocked, errorDetail } from "./api.js";
 
 function sseResponse(chunks, init){
   var enc = new TextEncoder();
@@ -150,7 +150,7 @@ test("blocked on both direct and proxy throws the descriptive error", async () =
   var err = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
   assert.equal(f.calls.length, 2);
   assert.equal(err.message,
-    "OpenRouter could not be reached from this network. Direct: CORS preflight failed (Failed to fetch). Proxy: refused (403). Try Settings → Advanced → Test connection, or another network.");
+    "OpenRouter could not be reached from this network. Direct: CORS preflight failed (Failed to fetch). Proxy: refused (403: blocked). Try Settings → Advanced → Test connection, or another network.");
 });
 
 test("describeBlocked formats one line", () => {
@@ -205,7 +205,7 @@ test("all paths blocked lists each with its reason", async () => {
   var f = fakeFetch([html403, typeErr, html403]);
   var err = await streamChat({ apiKey: "k", endpoint: "https://mine.test/x", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
   assert.equal(f.calls.length, 3);
-  assert.match(err.message, /Endpoint: refused \(403\)\. Proxy: CORS preflight failed \(Failed to fetch\)\. Direct: refused \(403\)\./);
+  assert.match(err.message, /Endpoint: refused \(403: blocked\)\. Proxy: CORS preflight failed \(Failed to fetch\)\. Direct: refused \(403: blocked\)\./);
 });
 
 test("fallbackUrl null: no retry, message names the direct path", async () => {
@@ -218,10 +218,10 @@ test("probeEndpoint classifies responses and sends a minimal request", async () 
   var cases = [
     [() => new Response(JSON.stringify({ error: { message: "No auth credentials found", code: 401 } }), { status: 401 }), { ok: true, status: 401, reason: "reachable, but the key was rejected" }],
     [() => new Response(JSON.stringify({ error: { message: "model is required" } }), { status: 400 }), { ok: true, status: 400, reason: "reachable" }],
-    [html403, { ok: false, status: 403, reason: "refused (403)" }],
+    [html403, { ok: false, status: 403, reason: "refused (403: blocked)" }],
     [typeErr, { ok: false, status: 0, reason: "CORS preflight failed (Failed to fetch)" }],
     [() => new Response("{}", { status: 200 }), { ok: true, status: 200, reason: "reachable" }],
-    [() => new Response("bad gateway", { status: 502 }), { ok: false, status: 502, reason: "error 502" }]
+    [() => new Response("bad gateway", { status: 502 }), { ok: false, status: 502, reason: "error 502: bad gateway" }]
   ];
   for(var [h, want] of cases){
     var f = fakeFetch([h]);
@@ -242,7 +242,7 @@ test("probeAll probes endpoint, direct and proxy with labels", async () => {
   };
   var r = await probeAll({ endpoint: " https://mine.test/x ", apiKey: "k", fetchImpl: f, fallbackUrl: PROXY });
   assert.deepEqual(r.map(x => [x.label, x.url, x.ok, x.reason]), [
-    ["Endpoint", "https://mine.test/x", false, "refused (403)"],
+    ["Endpoint", "https://mine.test/x", false, "refused (403: nope)"],
     ["Direct", DEFAULT_API_URL, false, "CORS preflight failed (Failed to fetch)"],
     ["Proxy", PROXY, true, "reachable, but the key was rejected"]
   ]);
@@ -284,4 +284,77 @@ test("validEndpoint", () => {
   assert.equal(validEndpoint("https://a.b"), true);
   assert.equal(validEndpoint("http://localhost:8787/x"), true);
   assert.equal(validEndpoint("http://evil.test"), false);
+});
+
+test("errorDetail: object error, string error, detail/title", () => {
+  assert.equal(errorDetail(402, JSON.stringify({ error: { message: "No credits" } })), "402: No credits");
+  assert.equal(errorDetail(403, JSON.stringify({ error: "Forbidden thing" })), "403: Forbidden thing");
+  assert.equal(errorDetail(422, JSON.stringify({ detail: "bad field" })), "422: bad field");
+  assert.equal(errorDetail(400, JSON.stringify({ title: "Bad", detail: "why" })), "400: why · Bad");
+  assert.equal(errorDetail(400, JSON.stringify({ message: "m" })), "400: m");
+});
+test("errorDetail: metadata provider, raw and code", () => {
+  var t = JSON.stringify({ error: { message: "Provider returned error", code: "key_limit", metadata: { provider_name: "Acme", raw: { a: 1 } } } });
+  assert.equal(errorDetail(403, t), '403: Provider returned error · provider: Acme · raw: {"a":1} · code: key_limit');
+  assert.equal(errorDetail(500, JSON.stringify({ error: { message: "x", metadata: { raw: "text" } } })), "500: x · raw: text");
+});
+test("errorDetail: unknown JSON, HTML, plain, empty", () => {
+  assert.equal(errorDetail(403, '{"foo": 1}'), '403: {"foo":1}');
+  assert.equal(errorDetail(403, "<html><head><title>Just a moment</title></head><body><h1>Blocked</h1>  now</body></html>"), "403: Just a moment · Blocked now");
+  assert.equal(errorDetail(502, "bad   gateway\n"), "502: bad gateway");
+  assert.equal(errorDetail(403, ""), "403: empty response");
+  assert.equal(errorDetail(403, "   "), "403: empty response");
+});
+test("errorDetail: truncates body part to 300 chars", () => {
+  var out = errorDetail(500, "x".repeat(500));
+  assert.equal(out, "500: " + "x".repeat(300) + "…");
+});
+test("errorDetail: header suffixes", () => {
+  var h = new Headers({ "x-openrouter-error-origin": "client", "cf-mitigated": "challenge" });
+  assert.equal(errorDetail(403, JSON.stringify({ error: { message: "Key limit exceeded" } }), h), "403: Key limit exceeded [origin: client] [cf-mitigated: challenge]");
+  assert.equal(errorDetail(403, "", { "x-openrouter-error-origin": "client" }), "403: empty response [origin: client]");
+  assert.equal(errorDetail(403, "", new Headers()), "403: empty response");
+});
+test("errorDetail never throws on odd input", () => {
+  var bad = { get(){ throw new Error("boom"); } };
+  assert.equal(errorDetail(403, "", bad), "403: empty response");
+  for(var v of [undefined, null, 5, {}, [], "null", "[]", "123"]) assert.equal(typeof errorDetail(500, v, 7), "string");
+  assert.match(errorDetail(500, undefined), /^500: /);
+});
+test("JSON 403 with string error is surfaced with status, single call", async () => {
+  var f = fakeFetch([() => new Response(JSON.stringify({ error: "Key limit exceeded" }), { status: 403 }), okStream]);
+  var err = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(err.message, "Key limit exceeded (HTTP 403)");
+  assert.equal(f.calls.length, 1);
+});
+test("unrecognised error body is shown raw with status", async () => {
+  var f = fakeFetch([() => new Response("upstream exploded", { status: 500 })]);
+  var err = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(err.message, "Request failed (HTTP 500: upstream exploded)");
+});
+test("empty-body 403 via proxy start path is blocked, then reported", async () => {
+  var empty403 = () => new Response("", { status: 403 });
+  var f = fakeFetch([empty403, empty403]);
+  var err = await streamChat({ apiKey: "k", endpoint: PROXY, model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(f.calls.length, 2);
+  assert.deepEqual(f.calls.map(c => c.url), [PROXY, DEFAULT_API_URL]);
+  assert.match(err.message, /Proxy: refused \(403: empty response\)\. Direct: refused \(403: empty response\)\./);
+});
+test("API error answered by the proxy gets a ' via proxy' suffix", async () => {
+  var f = fakeFetch([() => new Response(JSON.stringify({ error: { message: "Key limit exceeded" } }), { status: 403 })]);
+  var err = await streamChat({ apiKey: "k", endpoint: PROXY, model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(err.message, "Key limit exceeded (HTTP 403) via proxy");
+  var f2 = fakeFetch([() => new Response(JSON.stringify({ error: { message: "Nope" } }), { status: 401 })]);
+  var e2 = await streamChat({ apiKey: "k", endpoint: "https://mine.test/x", model: "m", messages: [], fetchImpl: f2, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(e2.message, "Nope (HTTP 401) via endpoint");
+});
+
+test("recognised error keeps provider, raw and header detail", async () => {
+  var body = JSON.stringify({ error: { message: "Provider returned error", metadata: { provider_name: "Acme", raw: { reason: "x" } } } });
+  var f = fakeFetch([() => new Response(body, { status: 403, headers: { "x-openrouter-error-origin": "provider" } })]);
+  var err = await streamChat({ apiKey: "k", endpoint: PROXY, model: "m", messages: [], fetchImpl: f, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(err.message, 'Provider returned error · provider: Acme · raw: {"reason":"x"} [origin: provider] (HTTP 403) via proxy');
+  var f2 = fakeFetch([() => new Response(JSON.stringify({ error: { message: "No credits" } }), { status: 402 })]);
+  var e2 = await streamChat({ apiKey: "k", model: "m", messages: [], fetchImpl: f2, fallbackUrl: PROXY }).then(() => null, e => e);
+  assert.equal(e2.message, "No credits (HTTP 402)");
 });

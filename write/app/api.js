@@ -57,6 +57,62 @@ function apiJson(text){
   try{ var j = JSON.parse(text); }catch(e){ return null; }
   return (j && typeof j === "object" && (j.error || j.message)) ? j : null;
 }
+function cut(s, n){ return s.length > n ? s.slice(0, n) + "…" : s; }
+function readHeader(headers, name){
+  try{
+    if(!headers) return "";
+    var v = typeof headers.get === "function" ? headers.get(name) : headers[name];
+    return (typeof v === "string" || typeof v === "number") ? String(v).trim() : "";
+  }catch(e){ return ""; }
+}
+
+// One-line, human-readable description of a non-OK response: "<status>: <what the server said>".
+export function errorDetail(status, text, headers){
+  var detail = "";
+  try{
+    var t = typeof text === "string" ? text : (text == null ? "" : String(text));
+    var j = null;
+    try{ j = JSON.parse(t); }catch(e){ j = null; }
+    if(j && typeof j === "object"){
+      var parts = [];
+      var err = j.error;
+      var eo = err && typeof err === "object" ? err : null;
+      function add(v){ if(typeof v === "string" && v.trim()) parts.push(v.trim()); }
+      if(eo) add(eo.message);
+      else add(err);
+      add(j.message); add(j.detail); add(j.title);
+      var md = eo && eo.metadata && typeof eo.metadata === "object" ? eo.metadata : null;
+      if(md){
+        if(typeof md.provider_name === "string" && md.provider_name) parts.push("provider: " + md.provider_name);
+        if(md.raw != null && md.raw !== ""){
+          var raw = typeof md.raw === "string" ? md.raw : JSON.stringify(md.raw);
+          if(raw) parts.push("raw: " + raw);
+        }
+      }
+      if(eo){
+        if(typeof eo.code === "string" && eo.code) parts.push("code: " + eo.code);
+        if(typeof eo.type === "string" && eo.type) parts.push("type: " + eo.type);
+      }
+      detail = parts.length ? parts.join(" · ") : JSON.stringify(j);
+    }else{
+      var title = "";
+      if(/<\s*(html|!doctype|head|body|title)/i.test(t)){
+        var tm = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(t);
+        if(tm) title = tm[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+        t = t.replace(/<title[^>]*>[\s\S]*?<\/title>/i, " ").replace(/<(style|script)[^>]*>[\s\S]*?<\/\1>/gi, " ");
+      }
+      var body = t.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+      detail = title && body ? title + " · " + body : (title || body);
+    }
+    detail = detail ? cut(detail.replace(/\s+/g, " "), 300) : "empty response";
+  }catch(e){ detail = "empty response"; }
+  var out = status + ": " + detail;
+  var origin = readHeader(headers, "x-openrouter-error-origin");
+  if(origin) out += " [origin: " + origin + "]";
+  var cf = readHeader(headers, "cf-mitigated");
+  if(cf) out += " [cf-mitigated: " + cf + "]";
+  return out;
+}
 function isAbort(e, signal){ return (e && e.name === "AbortError") || !!(signal && signal.aborted); }
 
 // Path label for messages: "Direct" for OpenRouter, "Proxy" for the fallback worker, else "Endpoint".
@@ -112,8 +168,9 @@ export function probeEndpoint(o){
       if(apiJson(t) || res.ok){
         return { url: url, ok: true, status: status, reason: status === 401 ? "reachable, but the key was rejected" : "reachable" };
       }
-      if(status === 403) return { url: url, ok: false, status: 403, reason: "refused (403)" };
-      return { url: url, ok: false, status: status, reason: "error " + status };
+      var d = errorDetail(status, t, res.headers);
+      if(status === 403) return { url: url, ok: false, status: 403, reason: "refused (" + d + ")" };
+      return { url: url, ok: false, status: status, reason: "error " + d };
     });
   }, function(e){
     if(e && e.name === "AbortError") return { url: url, ok: false, status: 0, reason: "cancelled" };
@@ -202,19 +259,28 @@ export function streamChat(opts){
   function handle(res){
     if(!res.ok){
       return res.text().then(function(t){
-        var m = "Request failed (" + res.status + ").";
         var aj = apiJson(t);
+        var detail = errorDetail(res.status, t, res.headers);
         // A 403 that is not the API's own JSON error is a block page (WAF, proxy origin check): try another path.
-        if(res.status === 403 && !aj) throw BlockedError("refused (403)");
-        try{ var j = JSON.parse(t); m = (j && ((j.error && j.error.message) || j.message)) || m; }
-        catch(e){ if(t) m = t.slice(0, 300); }
+        if(res.status === 403 && !aj) throw BlockedError("refused (" + detail + ")");
+        var m = "";
+        try{
+          var j = JSON.parse(t);
+          if(j && typeof j === "object"){
+            var e0 = j.error;
+            m = (e0 && typeof e0 === "object" && typeof e0.message === "string" && e0.message) ||
+              (typeof e0 === "string" && e0) || (typeof j.message === "string" && j.message) || "";
+          }
+        }catch(e){ m = ""; }
         // Some models reject the reasoning parameter; nothing has streamed yet, so retry once without it.
         if(res.status === 400 && body.reasoning && !retried && /reason|effort|unsupported|not supported/i.test(m + " " + t)){
           retried = true;
           delete body.reasoning;
           return post().then(handle);
         }
-        throw new Error(m);
+        var lbl = pathLabel(result.url, fallbackUrl);
+        var via = lbl === "Direct" ? "" : " via " + lbl.toLowerCase();
+        throw new Error((m ? detail.slice(String(res.status).length + 2) + " (HTTP " + res.status + ")" : "Request failed (HTTP " + detail + ")") + via);
       });
     }
     if(!res.body) throw new Error("No response stream from server.");

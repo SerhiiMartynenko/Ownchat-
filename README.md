@@ -146,11 +146,14 @@ Features so far:
 - Projects, chapters and scenes, with a scene editor that autosaves.
 - Scenes open as paragraph blocks: tap a paragraph to edit it in place, tap its
   handle (or hold it) to select it, extend the selection to neighbours. A "Write"
-  button switches to a plain full-text editor and back.
+  button switches to a plain full-text editor and back; selecting text there shows
+  the same action bar for that selection.
 - AI actions on the selection: Rewrite, Tighten, Expand, Tone, Custom and
   Continue. The result streams into a preview with a word-level diff; Accept
   replaces the paragraphs, Retry takes an extra instruction, Reject discards.
   Actions use the writing model and reasoning level from Settings.
+- "To scene" on a chat reply puts the reply into the open scene: replace the
+  editor's selection, append it, or replace the whole scene (a version is saved).
 - Versions: accepting an AI change snapshots the previous text; "Save version"
   and "Versions…" live in the scene menu. Up to 30 versions per scene are kept on
   the device (they are not part of the export bundle).

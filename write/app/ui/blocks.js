@@ -68,7 +68,10 @@ export function initBlocks(opts){
     rows().forEach(function(row, i){ row.classList.toggle("selected", !!r && i >= r.start && i <= r.end); });
     updateBar();
   }
+  // In Write mode ui/scene.js owns the bar (it follows the textarea selection), so the blocks state
+  // (a range left over from blocks mode, a paint after Accept) must not show or hide it then.
   function updateBar(){
+    if(opts.ownsBar && opts.ownsBar()) return;
     barEl.hidden = !(range || editSelection() || (barPressing && barSnapshot));
   }
   function toggleIndex(i){
@@ -233,6 +236,7 @@ export function initBlocks(opts){
     var btn = e.target.closest("button");
     barPressing = false;
     if(!btn) return;
+    if(btn.id === "blockBarClose" && opts.ownsBar && opts.ownsBar()){ if(opts.onBarClose) opts.onBarClose(); return; }
     if(btn.id === "blockBarClose"){ clearSelection(); if(editing) editing.ta.focus(); return; }
     var act = btn.getAttribute("data-act");
     if(act && opts.onAction) opts.onAction(act);

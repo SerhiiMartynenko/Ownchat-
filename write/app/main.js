@@ -7,7 +7,9 @@ import { openDb, requestPersistence } from "./db.js";
 import { isIOS, isStandalone } from "./storage.js";
 import { createStore, emptyThread } from "./store.js";
 import { createDigest } from "./digest.js";
-import { blocksToText } from "./scene.js";
+import { blocksToText, textToBlocks, countWords } from "./scene.js";
+import { insertAfter } from "./editor.js";
+import { cleanProse } from "./rewrite.js";
 import { shareOrDownload, exportBundle, exportManuscript, readBundleFile } from "./export.js";
 import { parseRoute, formatRoute } from "./router.js";
 import { initBibleUI, openBible, openCardEditor } from "./ui/bible.js";
@@ -81,6 +83,9 @@ import { initStorageUI } from "./ui/storage.js";
   var ctxMeter=$("ctxMeter"), ctxMeterText=$("ctxMeterText"), ctxOverlay=$("ctxOverlay");
   var reader=$("reader"), readerBody=$("readerBody"), readerTitle=$("readerTitle");
   var currentReaderMd = "";
+  // The empty-state paragraph of a project chat, as written in the page (a scene chat swaps in its own).
+  var EMPTY_PROJECT_TEXT = empty.querySelector("p").textContent;
+  var EMPTY_SCENE_TEXT = "Talk about this scene. Replies stay here; use To scene on a reply to put it in, or select text in the editor to rewrite it in place.";
 
   /* ===== Utilities ===== */
   function escapeHtml(s){ return String(s).replace(/[&<>"']/g,function(c){
@@ -237,14 +242,79 @@ import { initStorageUI } from "./ui/storage.js";
       '<button class="act" data-a="copy" type="button">'  + ICON.copy + '<span>Copy</span></button>' +
       '<button class="act" data-a="export" type="button">'+ ICON.dl   + '<span>Export</span></button>' +
       '<button class="act" data-a="read" type="button">'  + ICON.read + '<span>Read</span></button>' +
-      '<button class="act" data-a="card" type="button">'  + ICON.card + '<span>Card</span></button>';
+      '<button class="act" data-a="card" type="button">'  + ICON.card + '<span>Card</span></button>' +
+      '<button class="act" data-a="scene" type="button">' + ICON.arrow + '<span>To scene</span></button>';
     els.actions.querySelector('[data-a=copy]').addEventListener("click", function(){ copyText(msg.content); });
     els.actions.querySelector('[data-a=export]').addEventListener("click", function(){ exportMarkdown(msg.content, slugFilename(msg.content)); });
     els.actions.querySelector('[data-a=read]').addEventListener("click", function(){ openReader(msg.content, firstHeading(msg.content)); });
     els.actions.querySelector('[data-a=card]').addEventListener("click", function(){
       openCardEditor({ type:"note", name: firstHeading(msg.content || "").slice(0,40) || "Note", body: msg.content || "", pinned:false });
     });
+    var toScene = els.actions.querySelector('[data-a=scene]');
+    if(!msg.content) toScene.setAttribute("data-empty", "1");
+    toScene.hidden = !msg.content || !targetSceneForChat();
+    toScene.addEventListener("click", function(){ replyToScene(msg); });
     els.actions.hidden = false;
+  }
+
+  /* ===== To scene: a chat reply into the scene ===== */
+  // The scene a reply can go to: the thread's own scene in a scene chat, else the project's active
+  // (last opened) scene. A record (at least {id, title}) or null.
+  function targetSceneForChat(){
+    if(!thread) return null;
+    if(thread.scope !== "scene") return activeScene;
+    if(!thread.sceneId) return null;
+    if(activeScene && activeScene.id === thread.sceneId) return activeScene;
+    var cur = sceneEditor ? sceneEditor.current() : null;
+    if(cur && cur.id === thread.sceneId) return cur;
+    return { id: thread.sceneId, title: "" };
+  }
+  // The buttons are built when a message renders; the target can change later (scope, active scene).
+  function refreshToSceneButtons(){
+    var has = !!targetSceneForChat();
+    list.querySelectorAll('.act[data-a=scene]').forEach(function(b){ b.hidden = !has || b.hasAttribute("data-empty"); });
+  }
+  function editorHas(id){
+    var cur = sceneEditor ? sceneEditor.current() : null;
+    return !!cur && cur.id === id;
+  }
+  // The scene is not loaded in the editor (a project chat opened from the outline): write it through
+  // the store. Only append and replace exist here, there is no selection.
+  async function applyToStoredScene(id, text, how){
+    var sc = await store.getScene(id);
+    if(!sc) throw new Error("The scene no longer exists");
+    var blocks = how === "replace" ? textToBlocks(text, [], uid) : insertAfter(sc.blocks, sc.blocks.length - 1, text, uid);
+    var res = await store.saveSceneWithVersion({ id: id, blocks: blocks, wordCount: countWords(blocksToText(blocks)) },
+      { reason: how === "replace" ? "chat-replace" : "chat-append" });
+    if(!res) throw new Error("The scene no longer exists");
+    if(activeScene && activeScene.id === id) activeScene = res.scene;
+    return true;
+  }
+  async function replyToScene(msg){
+    var target = targetSceneForChat();
+    if(!target || !msg.content) return;
+    var id = target.id;
+    var text = cleanProse(msg.content).text || msg.content;
+    var items = [];
+    if(editorHas(id) && sceneEditor.hasSelection()) items.push({ act:"selection", label:"Replace selection" });
+    items.push({ act:"append", label:"Append to scene" });
+    items.push({ act:"replace", label:"Replace whole scene\u2026" });
+    var how = await openMenu("To scene \u00b7 " + (target.title || "Untitled scene"), items);
+    if(!how) return;
+    if(how === "replace" && !window.confirm("Replace the whole scene text? The current text is kept as a version.")) return;
+    var ok = false;
+    try{
+      if(editorHas(id)) ok = await sceneEditor.applyText(text, how);
+      else if(how !== "selection") ok = await applyToStoredScene(id, text, how);
+      else toast("Select the text again");
+    }catch(e){
+      toast("Could not apply: " + ((e && e.message) || "unknown error"));
+      return;
+    }
+    if(!ok) return;
+    toast(how === "append" ? "Added to scene \u00b7 version saved" : "Replaced \u00b7 version saved");
+    // Split shows the editor beside the chat already; elsewhere go and show the result.
+    if(!mqSplit.matches) navigate({ name:"scene", sceneId: id });
   }
 
   function finalizeAssistant(els, state){
@@ -1047,6 +1117,8 @@ import { initStorageUI } from "./ui/storage.js";
     pBtn.setAttribute("aria-pressed", sceneScope ? "false" : "true");
     sBtn.textContent = "Scene \u00b7 " + ((activeScene && activeScene.title) || "Untitled scene");
     $("emptyTitle").textContent = sceneScope ? "Scene chat" : "Project chat";
+    empty.querySelector("p").textContent = sceneScope ? EMPTY_SCENE_TEXT : EMPTY_PROJECT_TEXT;
+    refreshToSceneButtons();
   }
   function pickScope(v){
     if(!project || !thread || !chatShown()) return;

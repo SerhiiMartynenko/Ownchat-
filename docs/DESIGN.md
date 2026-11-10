@@ -79,7 +79,8 @@ Background work on the utility model:
 Each paragraph is a block. Tap a block to edit it in place (textarea sized to
 content). Long-press (or a handle) selects the block; extend to neighbours.
 Native in-text selection inside a block is also supported for sentence-level
-edits.
+edits. In Write mode (the plain textarea) a native text selection shows the same
+toolbar and the action applies to exactly the selected text.
 
 AI block toolbar: Rewrite, Tighten, Expand, Tone, Continue, Custom instruction.
 
@@ -107,8 +108,10 @@ The model never writes to approved cards directly.
 ## 7. Chat
 
 Threads are scoped: one per scene and one per project. Older messages fold into
-the rolling summary (section 4). Any message has "save as card" and "save as
-scene note". The current scene is always in context for a scene thread.
+the rolling summary (section 4). Any message has "save as card", and a reply has
+"To scene" (replace the editor's selection, append, or replace the whole scene;
+a version is saved first). The current scene is always in context for a scene
+thread. Chat never edits the document on its own.
 
 ## 8. Export and import
 

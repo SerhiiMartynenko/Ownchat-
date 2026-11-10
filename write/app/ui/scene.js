@@ -3,9 +3,11 @@
 // Autosave: 700 ms after the last edit, at most every 5 s while typing, and on blur, page hide,
 // tab hide and route changes (flush). Unchanged text is not saved; one save runs at a time and the
 // latest text wins. AI actions open the preview sheet; Accept and Restore save through
-// store.saveSceneWithVersion so the replaced text is kept as a version.
+// store.saveSceneWithVersion so the replaced text is kept as a version. The action bar acts on the
+// blocks selection in Blocks mode and on the textarea's native selection in Write mode (see syncWriteBar).
+// applyText puts a chat reply into the scene through the same apply path as Accept.
 import { textToBlocks, blocksToText, countWords, splitParagraphs } from "../scene.js";
-import { applyReplacement, insertAfter, spliceSelection, windowAround, insertionWindow, normalizeRange } from "../editor.js";
+import { applyReplacement, insertAfter, spliceSelection, windowAround, insertionWindow, normalizeRange, selectionWindow } from "../editor.js";
 import { ACTIONS, TONES, buildActionRequest, cleanProse, looksLikeChat } from "../rewrite.js";
 import { initBlocks } from "./blocks.js";
 import { initPreview } from "./preview.js";
@@ -14,6 +16,7 @@ import { initVersions } from "./versions.js";
 var DEBOUNCE_MS = 700;
 var MAX_WAIT_MS = 5000;
 var MODES = ["blocks", "write"];
+var STALE = "The text changed. Run the action again.";
 
 export function initSceneEditor(deps){
   var $ = deps.$, store = deps.store, toast = deps.toast, uid = deps.uid;
@@ -24,8 +27,12 @@ export function initSceneEditor(deps){
   var mode = MODES.indexOf(viewEl.getAttribute("data-mode")) >= 0 ? viewEl.getAttribute("data-mode") : "blocks";
   var timer = null, maxTimer = null, inflight = null, again = false, wordsRaf = 0;
   var job = null;              // running AI request {controller, partial}
+  var barEl = $("blockBar");
+  var writeSel = null;         // Write mode: last non-empty textarea selection {start, end, raw}
 
-  var blocksUI = initBlocks({ listEl: $("blockList"), barEl: $("blockBar"), uid: uid,
+  var blocksUI = initBlocks({ listEl: $("blockList"), barEl: barEl, uid: uid,
+    ownsBar: function(){ return mode === "write"; },
+    onBarClose: closeWriteBar,
     onChange: function(){ wordsSoon(); schedule(); },
     onInput: function(){ wordsSoon(); schedule(); },
     onAction: function(act){ runAction(act); },
@@ -103,11 +110,40 @@ export function initSceneEditor(deps){
     return inflight;
   }
 
+  /* ----- Write-mode selection and bar ----- */
+  // The bar shows while the textarea has a non-empty selection. The last one is kept in writeSel so a
+  // bar press still has it if the textarea lost focus meanwhile; it is dropped when the selection
+  // collapses while the textarea has focus (a blur alone keeps selectionStart/End, so it is no reason).
+  function syncWriteBar(){
+    if(mode !== "write") return;
+    var a = textEl.selectionStart, b = textEl.selectionEnd;
+    var has = !!scene && typeof a === "number" && a !== b;
+    if(has) writeSel = { start: Math.min(a, b), end: Math.max(a, b), raw: textEl.value };
+    else if(document.activeElement === textEl) writeSel = null;
+    barEl.hidden = !has;
+  }
+  // The selection an action or a chat reply applies to: the live one, else the kept one while the text
+  // is unchanged.
+  function currentWriteSel(){
+    if(mode !== "write" || !scene) return null;
+    var a = textEl.selectionStart, b = textEl.selectionEnd;
+    if(typeof a === "number" && a !== b) return { start: Math.min(a, b), end: Math.max(a, b), raw: textEl.value };
+    return writeSel && writeSel.raw === textEl.value ? writeSel : null;
+  }
+  function closeWriteBar(){
+    var e = textEl.selectionEnd;
+    if(typeof e === "number") try{ textEl.setSelectionRange(e, e); }catch(err){}
+    writeSel = null;
+    barEl.hidden = true;
+  }
+
   /* ----- Surfaces ----- */
   function renderSurface(blocks){
     if(mode === "write"){
       textEl.value = blocksToText(blocks);
       textEl.scrollTop = 0;
+      writeSel = null;
+      barEl.hidden = true;
     } else {
       blocksUI.render(blocks);
     }
@@ -127,6 +163,8 @@ export function initSceneEditor(deps){
     if(MODES.indexOf(next) < 0 || next === mode){ viewEl.setAttribute("data-mode", mode); return mode; }
     if(!scene){ mode = next; viewEl.setAttribute("data-mode", mode); return mode; }
     blocksUI.commitEditing();
+    // A blocks range does not carry over to Write mode (and vice versa): the bar starts hidden.
+    blocksUI.clearSelection();
     var draft = draftBlocks();
     await flush();
     // Render from the saved record when nothing changed since (keeps the ids the store holds).
@@ -180,6 +218,12 @@ export function initSceneEditor(deps){
     return p.then(function(){ scene = null; });
   }
   function current(){ return scene; }
+  function hasSelection(){
+    if(!scene) return false;
+    if(mode === "write") return !!currentWriteSel();
+    var sel = blocksUI.getSelection();
+    return !!(sel.range || sel.editing);
+  }
 
   // The scene was renamed elsewhere (scene menu): take the stored title without a second save.
   function renamed(rec){
@@ -243,6 +287,18 @@ export function initSceneEditor(deps){
   // Works out what an action applies to, from a selection captured before any await.
   function deriveTarget(act, sel, blocks, opts){
     var isContinue = act === "continue";
+    if(sel.write && !(isContinue && opts.atEnd)){
+      var ws = sel.write;
+      if(mode !== "write" || textEl.value !== ws.raw) return { error: "The text changed. Select the text again." };
+      var win = selectionWindow(ws.raw, ws.start, ws.end, 2);
+      if(isContinue){
+        // blocks is textToBlocks(raw) here, so paraIndex indexes it directly.
+        var w3 = insertionWindow(blocks, win.paraIndex, 2);
+        return { kind: "insert", afterIndex: win.paraIndex, raw: ws.raw, before: w3.before, after: w3.after };
+      }
+      return { kind: "write", raw: ws.raw, start: win.start, end: win.end, text: win.text,
+        before: win.before, after: win.after };
+    }
     if(sel.editing && !(isContinue && opts.atEnd)){
       var ed = sel.editing;
       var idx = -1;
@@ -278,9 +334,11 @@ export function initSceneEditor(deps){
     if(!scene || !ACTIONS[act]) return;
     var settings = deps.getSettings ? deps.getSettings() : {};
     if(!settings.apiKey){ toast("Add your OpenRouter key in Settings"); return; }
-    if(mode !== "blocks" && act !== "continue"){ toast("Switch to Blocks to select text"); return; }
-    var sel = mode === "blocks" ? blocksUI.getSelection() : { range: null, editing: null };
-    if(act !== "continue" && !sel.range && !sel.editing){ toast("Select a paragraph first"); return; }
+    // Captured before any await (the tone menu or the prompt can move focus and the selection).
+    var sel = mode === "blocks" ? blocksUI.getSelection() : { range: null, editing: null, write: currentWriteSel() };
+    if(act !== "continue" && !sel.range && !sel.editing && !sel.write){
+      toast(mode === "write" ? "Select some text first" : "Select a paragraph first"); return;
+    }
 
     var tone = opts.tone || "", instruction = opts.instruction || "";
     if(act === "tone" && !tone){
@@ -363,32 +421,83 @@ export function initSceneEditor(deps){
   }
 
   async function accept(ctx, text){
-    if(!scene || scene.id !== ctx.sceneId){ preview.close(); return; }
-    var blocks = draftBlocks();
-    var t = ctx.target, next;
-    if(t.kind === "insert"){
+    preview.close();
+    if(!scene || scene.id !== ctx.sceneId) return;
+    if(await applyTarget(ctx.target, text, ctx.act)){
+      toast(ctx.target.kind === "insert" ? "Inserted · version saved" : "Applied · version saved");
+    }
+  }
+
+  // Puts text into the scene at a target from deriveTarget (or {kind:"replace"} for the whole scene)
+  // and saves it with a version. Resolves true when applied; on a stale target or a failed save it
+  // shows a toast and resolves false. Shared by Accept and applyText (chat replies).
+  async function applyTarget(t, text, reason){
+    if(!scene) return false;
+    var writeTarget = t.kind === "write" || (t.kind === "insert" && t.raw != null);
+    if(writeTarget && (mode !== "write" || textEl.value !== t.raw)){ toast(STALE); return false; }
+    var blocks = draftBlocks(), next;
+    if(t.kind === "write"){
+      next = textToBlocks(spliceSelection(t.raw, t.start, t.end, text), scene.blocks, uid);
+    } else if(t.kind === "insert"){
       next = insertAfter(blocks, t.afterIndex, text, uid);
+    } else if(t.kind === "replace"){
+      next = textToBlocks(text, [], uid);
     } else if(t.kind === "range"){
-      if(blocksToText(blocks.slice(t.range.start, t.range.end + 1)) !== t.text){
-        toast("The text changed. Run the action again."); preview.close(); return;
-      }
+      if(blocksToText(blocks.slice(t.range.start, t.range.end + 1)) !== t.text){ toast(STALE); return false; }
       next = applyReplacement(blocks, t.range, text, uid);
     } else {
       var value = spliceSelection(t.value, t.start, t.end, text);
       next = applyReplacement(blocks, { start: t.idx, end: t.idx + t.count - 1 }, value, uid);
     }
-    preview.close();
+    // Write mode re-renders the textarea from the saved blocks: keep the reading position.
+    var top = mode === "write" ? textEl.scrollTop : 0;
     try{
-      await replaceBlocks(next, { reason: ctx.act });
-      blocksUI.clearSelection();
-      toast(t.kind === "insert" ? "Inserted · version saved" : "Applied · version saved");
+      await replaceBlocks(next, { reason: reason });
     }catch(e){
       toast("Could not apply: " + ((e && e.message) || "unknown error"));
+      return false;
     }
+    blocksUI.clearSelection();
+    if(mode === "write"){
+      var at = t.kind === "write" ? Math.min(t.start, textEl.value.length) : textEl.selectionEnd;
+      try{ textEl.setSelectionRange(at, at); }catch(e2){}
+      textEl.scrollTop = top;
+      writeSel = null;
+      barEl.hidden = true;
+    }
+    return true;
+  }
+
+  // A chat reply into the open scene. how: "selection" (the blocks range, the sentence selection or
+  // the Write selection), "append" (after the last paragraph) or "replace" (the whole scene).
+  // Resolves true when applied.
+  async function applyText(text, how){
+    if(!scene) return false;
+    var sel = mode === "blocks" ? blocksUI.getSelection() : { range: null, editing: null, write: currentWriteSel() };
+    blocksUI.commitEditing();
+    await flush();
+    if(!scene) return false;
+    var blocks = draftBlocks(), t, reason;
+    if(how === "selection"){
+      t = deriveTarget("rewrite", sel, blocks, {});
+      reason = "chat-selection";
+    } else if(how === "replace"){
+      t = { kind: "replace" };
+      reason = "chat-replace";
+    } else {
+      t = { kind: "insert", afterIndex: blocks.length - 1 };
+      reason = "chat-append";
+    }
+    if(t.error){ toast(t.error); return false; }
+    return applyTarget(t, text, reason);
   }
 
   /* ----- Wiring ----- */
-  textEl.addEventListener("input", function(){ wordsSoon(); schedule(); });
+  textEl.addEventListener("input", function(){ wordsSoon(); schedule(); syncWriteBar(); });
+  ["select", "keyup", "pointerup", "mouseup", "touchend", "focus", "selectionchange"].forEach(function(ev){
+    textEl.addEventListener(ev, syncWriteBar);
+  });
+  document.addEventListener("selectionchange", syncWriteBar);
   titleEl.addEventListener("input", schedule);
   textEl.addEventListener("blur", function(){ if(dirty()) save(); });
   titleEl.addEventListener("blur", function(){ if(dirty()) save(); });
@@ -403,5 +512,5 @@ export function initSceneEditor(deps){
 
   return { open: open, flush: flush, close: close, current: current, setMode: setMode, mode: getMode,
     replaceBlocks: replaceBlocks, runAction: runAction, saveVersion: saveVersion, openVersions: openVersions,
-    renamed: renamed };
+    renamed: renamed, hasSelection: hasSelection, applyText: applyText };
 }

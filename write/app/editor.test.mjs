@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   commitEdit, rangeFromIndex, toggleInRange, normalizeRange, applyReplacement, insertAfter,
-  spliceSelection, windowAround, insertionWindow
+  spliceSelection, windowAround, insertionWindow, selectionWindow
 } from "./editor.js";
 
 const mkUid = (prefix = "n") => { let i = 0; return () => prefix + (++i); };
@@ -135,4 +135,74 @@ test("windowAround and insertionWindow", () => {
   const last = insertionWindow(blocks, 6, 2);
   assert.deepEqual(texts(last.before), ["6", "7"]);
   assert.deepEqual(last.after, []);
+});
+
+// selectionWindow: the Write-mode selection target and its paragraph window.
+const RAW = "Para one.\n\nPara two is here.\n\n\n  Para three.  \n\nPara four.\n\nPara five.";
+const at = (sub) => RAW.indexOf(sub);
+const tx = (xs) => xs.map(x => x.text);
+
+test("selectionWindow: middle of a paragraph", () => {
+  const s = at("two"), e = s + "two is".length;
+  const w = selectionWindow(RAW, s, e, 2);
+  assert.equal(w.text, "two is");
+  assert.deepEqual([w.start, w.end], [s, e]);
+  assert.deepEqual(tx(w.before), ["Para one.", "Para "]);
+  assert.deepEqual(tx(w.after), [" here.", "Para three.", "Para four."]);
+  assert.equal(w.paraIndex, 1);
+});
+
+test("selectionWindow: spans two paragraphs, blank-line runs and padding handled", () => {
+  const s = at("is here"), e = at("three") + "three".length;
+  const w = selectionWindow(RAW, s, e, 2);
+  assert.equal(w.text, "is here.\n\n\n  Para three");
+  assert.deepEqual(tx(w.before), ["Para one.", "Para two "]);
+  assert.deepEqual(tx(w.after), [".", "Para four.", "Para five."]);
+  assert.equal(w.paraIndex, 2);
+});
+
+test("selectionWindow: at the start and at the end of the text", () => {
+  const w0 = selectionWindow(RAW, 0, 4, 2);
+  assert.equal(w0.text, "Para");
+  assert.deepEqual(w0.before, []);
+  assert.deepEqual(tx(w0.after), [" one.", "Para two is here.", "Para three."]);
+  assert.equal(w0.paraIndex, 0);
+  const n = RAW.length, w1 = selectionWindow(RAW, n - 5, n, 2);
+  assert.equal(w1.text, "five.");
+  assert.deepEqual(tx(w1.before), ["Para three.", "Para four.", "Para "]);
+  assert.deepEqual(w1.after, []);
+  assert.equal(w1.paraIndex, 4);
+  // A selection ending exactly where a paragraph starts belongs to the paragraph before it.
+  const w2 = selectionWindow(RAW, 0, at("Para two"), 2);
+  assert.equal(w2.paraIndex, 0);
+});
+
+test("selectionWindow: reversed and out-of-range offsets are swapped and clamped", () => {
+  const s = at("two"), e = s + 3;
+  assert.deepEqual(selectionWindow(RAW, e, s, 2), selectionWindow(RAW, s, e, 2));
+  const w = selectionWindow(RAW, -5, 1e9, 2);
+  assert.deepEqual([w.start, w.end, w.text], [0, RAW.length, RAW]);
+  assert.equal(w.paraIndex, 4);
+});
+
+test("selectionWindow: empty raw", () => {
+  assert.deepEqual(selectionWindow("", 0, 0, 2), { start: 0, end: 0, text: "", before: [], after: [], paraIndex: -1 });
+  assert.deepEqual(selectionWindow(null, 3, 1, 2), { start: 0, end: 0, text: "", before: [], after: [], paraIndex: -1 });
+  assert.equal(selectionWindow("\n\n  \n", 0, 3, 2).paraIndex, -1);
+});
+
+test("selectionWindow: n=0 keeps only the partial paragraphs; default n is 2", () => {
+  const s = at("two"), e = s + 3;
+  const w = selectionWindow(RAW, s, e, 0);
+  assert.deepEqual(tx(w.before), ["Para "]);
+  assert.deepEqual(tx(w.after), [" is here."]);
+  assert.deepEqual(selectionWindow(RAW, s, e), selectionWindow(RAW, s, e, 2));
+});
+
+test("selectionWindow: paragraph indices agree with splitParagraphs and CRLF text", () => {
+  const raw = "A one.\r\n\r\nB two.\r\nC three.";
+  const w = selectionWindow(raw, raw.indexOf("two"), raw.indexOf("two") + 3, 2);
+  assert.equal(w.paraIndex, 1);
+  assert.deepEqual(tx(w.before), ["A one.", "B "]);
+  assert.deepEqual(tx(w.after), [".", "C three."]);
 });

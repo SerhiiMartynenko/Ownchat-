@@ -418,6 +418,79 @@ async function run(browser) {
   await page.click('#hdrMode');
   await page.waitForFunction(() => document.getElementById('viewScene').getAttribute('data-mode') === 'blocks');
 
+  // ---- M2. Action bar in write mode ----
+  const writeSelect = (a, b) => page.evaluate(([a, b]) => { const t = document.getElementById('sceneText'); t.focus(); t.setSelectionRange(a, b); document.dispatchEvent(new Event('selectionchange')); }, [a, b]);
+  const taSel = () => page.evaluate(() => { const t = document.getElementById('sceneText'); return [t.selectionStart, t.selectionEnd]; });
+  await page.click('#hdrMode');
+  await page.waitForFunction(() => document.getElementById('viewScene').getAttribute('data-mode') === 'write');
+  await page.waitForTimeout(200);
+  check('M2. write mode: bar hidden without a selection', !(await barShown()));
+  let raw = await page.inputValue('#sceneText');
+  let paras = raw.split('\n\n');
+  const pick = 'ran black and quick';
+  const sa = raw.indexOf(paras[1]) + paras[1].indexOf(pick), sb = sa + pick.length;
+  await writeSelect(sa, sb);
+  await page.waitForSelector('#blockBar', { state: 'visible', timeout: 3000 }).catch(() => {});
+  check('M2. selecting text in #sceneText shows #blockBar', await barShown());
+  await page.screenshot({ path: OUT + 'p3-write-bar.png' });
+  let nv2 = (await sceneVersions()).length;
+  n0 = reqs.length;
+  await act('rewrite'); await waitDone();
+  rq = lastReq();
+  const ut2 = userText(rq.body);
+  check('M2. one request; target is exactly the selection', reqs.length === n0 + 1 && targetOf(rq.body) === pick, targetOf(rq.body));
+  check('M2. window has the neighbours, not the far paragraphs', ut2.includes('## Text before\n' + paras[0] + '\n\nThe river below') && ut2.includes(paras[2]) && ut2.includes(paras[3]) && !ut2.includes(paras[4]) && !ut2.includes(paras[paras.length - 1]) && rq.body.messages.length === 2, ut2);
+  check('M2. preview diff is against the selection (4 -> 5 words)', /4 → 5 words/.test(await page.textContent('#previewStats')), await page.textContent('#previewStats'));
+  await page.click('#previewAccept');
+  check('M2. toast "Applied · version saved"', await toastHas('Applied · version saved'));
+  await waitClosed();
+  const expected = raw.slice(0, sa) + 'Rewritten: ' + pick + raw.slice(sb);
+  check('M2. #sceneText is the spliced text', (await page.inputValue('#sceneText')) === expected, await page.inputValue('#sceneText'));
+  sc = await waitSaved(s => texts(s).join('\n\n') === expected);
+  check('M2. IndexedDB blocks match the spliced text', texts(sc).join('\n\n') === expected, texts(sc));
+  vs = await sceneVersions();
+  check('M2. one version added (reason rewrite) and the bar is hidden', vs.length === nv2 + 1 && vs[vs.length - 1].reason === 'rewrite' && !(await barShown()), [vs.length, nv2, await barShown()]);
+  // Close button collapses the selection.
+  raw = await page.inputValue('#sceneText');
+  await writeSelect(0, 4);
+  await page.waitForSelector('#blockBar', { state: 'visible', timeout: 3000 }).catch(() => {});
+  await page.click('#blockBarClose');
+  const cs2 = await taSel();
+  check('M2. close collapses the selection and hides the bar', cs2[0] === cs2[1] && !(await barShown()), [cs2, await barShown()]);
+  // Continue from the bar inserts after the paragraph holding the selection end.
+  paras = raw.split('\n\n');
+  await writeSelect(5, 12);
+  await page.waitForSelector('#blockBar', { state: 'visible', timeout: 3000 }).catch(() => {});
+  n0 = reqs.length;
+  await act('continue'); await waitDone();
+  const ut3 = userText(lastReq().body);
+  check('M2. bar Continue: no target, window ends at paragraph 1', reqs.length === n0 + 1 && !ut3.includes('## Target') && ut3.includes('## Text before\n' + paras[0] + '\n\n## ') && ut3.includes('## Text after\n' + paras[1]), ut3);
+  await page.click('#previewAccept');
+  check('M2. bar Continue Insert toast', await toastHas('Inserted · version saved'));
+  const exp2 = [paras[0], 'The lamp guttered.', 'She waited.'].concat(paras.slice(1)).join('\n\n');
+  await page.waitForFunction((e) => document.getElementById('sceneText').value === e, exp2, { timeout: 4000 }).catch(() => {});
+  check('M2. inserted after paragraph 1', (await page.inputValue('#sceneText')) === exp2, await page.inputValue('#sceneText'));
+  // Text edited while the preview is open: Accept refuses.
+  raw = await page.inputValue('#sceneText');
+  await writeSelect(0, 4);
+  await page.waitForSelector('#blockBar', { state: 'visible', timeout: 3000 }).catch(() => {});
+  nv2 = (await sceneVersions()).length;
+  await act('tighten'); await waitDone();
+  await page.evaluate(() => { const t = document.getElementById('sceneText'); t.value = t.value + ' Edited.'; t.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.click('#previewAccept');
+  check('M2. Accept after an edit says the text changed, no version', await toastHas('The text changed. Run the action again.') && (await sceneVersions()).length === nv2 && (await page.inputValue('#sceneText')) === raw + ' Edited.');
+  await waitClosed();
+  await page.waitForTimeout(900);
+  // Back in blocks mode the blocks rules apply again.
+  await page.click('#hdrMode');
+  await page.waitForFunction(() => document.getElementById('viewScene').getAttribute('data-mode') === 'blocks');
+  check('M2. back to blocks: bar hidden with nothing selected', !(await barShown()) && (await selCount()) === 0);
+  await handle(0).click();
+  const onB = await barShown();
+  await page.click('#blockBarClose');
+  check('M2. blocks selection still shows and closes the bar', onB && !(await barShown()) && (await selCount()) === 0);
+  await page.screenshot({ path: OUT + 'p3-write-bar-after.png' });
+
   // ---- N. Outline menu, headers, errors ----
   await page.click('#hdrBack'); await waitView('outline');
   await page.click('#hdrMenu');

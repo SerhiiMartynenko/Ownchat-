@@ -133,3 +133,48 @@ export function insertionWindow(blocks, afterIndex, n){
   var i=isInt(afterIndex) ? Math.max(-1, Math.min(afterIndex, out.length-1)) : out.length-1;
   return { before:out.slice(Math.max(0, i+1-k), i+1), after:out.slice(i+1, i+1+k) };
 }
+
+// Paragraph spans of raw text as splitParagraphs sees them: each non-blank line run, trimmed, with its
+// [start, end) offsets in raw. Runs of newlines (blank lines included) separate paragraphs.
+function paragraphSpans(raw){
+  var out=[], re=/[^\r\n]+/g, m;
+  while((m=re.exec(raw))){
+    var line=m[0], t=line.trim();
+    if(!t) continue;
+    var s=m.index+line.indexOf(t);
+    out.push({ start:s, end:s+t.length, text:t });
+  }
+  return out;
+}
+
+// Context window for a plain-text selection [start, end) of raw (the Write textarea): before = up to n
+// whole paragraphs before the paragraph holding `start`, plus that paragraph's text before `start`;
+// after = the text after `end` in its paragraph, plus up to n following paragraphs. Offsets are clamped
+// and swapped like spliceSelection. paraIndex is the index (in splitParagraphs(raw)) of the paragraph
+// holding `end` (the first one when `end` sits before any text), or -1 when raw has no paragraphs.
+export function selectionWindow(raw, start, end, n){
+  var t=str(raw), len=t.length;
+  var k=isInt(n) && n>=0 ? n : 2;
+  var a=Number(start), b=Number(end);
+  a=isFinite(a) ? Math.max(0, Math.min(len, Math.floor(a))) : 0;
+  b=isFinite(b) ? Math.max(0, Math.min(len, Math.floor(b))) : a;
+  if(a>b){ var x=a; a=b; b=x; }
+  var spans=paragraphSpans(t);
+  var res={ start:a, end:b, text:t.slice(a, b), before:[], after:[], paraIndex:-1 };
+  if(!spans.length) return res;
+  // sp: the last paragraph starting at or before `a`; ep: the last one starting before `b`.
+  var sp=0, ep=0;
+  for(var i=0; i<spans.length; i++){
+    if(spans[i].start<=a) sp=i;
+    if(spans[i].start<b) ep=i;
+  }
+  var whole=function(p){ return { text:p.text }; };
+  res.before=spans.slice(Math.max(0, sp-k), sp).map(whole);
+  var head=t.slice(spans[sp].start, Math.min(a, spans[sp].end));
+  if(head.trim()) res.before.push({ text:head });
+  var tail=t.slice(Math.max(b, spans[ep].start), spans[ep].end);
+  if(tail.trim()) res.after.push({ text:tail });
+  res.after=res.after.concat(spans.slice(ep+1, ep+1+k).map(whole));
+  res.paraIndex=ep;
+  return res;
+}

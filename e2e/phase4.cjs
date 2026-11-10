@@ -397,6 +397,72 @@ async function run(browser) {
   check('11. project chat state: title "Project chat", Scene scope not on, no errors', (await page.textContent('#emptyTitle')) === 'Project chat' && await page.locator('#chatScopeScene.on').count() === 0 && errors.length === errBefore, errors.slice(errBefore));
   await page.screenshot({ path: OUT + 'p4-legacy-chat.png' });
 
+  // ---- 13. To scene on chat replies ----
+  const SCENE_EMPTY = 'Talk about this scene. Replies stay here; use To scene on a reply to put it in, or select text in the editor to rewrite it in place.';
+  const lastAsst = () => page.locator('.msg.assistant').last();
+  const menuActs = () => page.locator('#menuItems [data-act]').evaluateAll(els => els.map(e => e.getAttribute('data-act')));
+  const versionsOf = async (sid) => (await idbDump()).data.versions.filter(v => v.sceneId === sid);
+  const sceneById = async (sid) => (await idbDump()).data.scenes.find(s => s.id === sid);
+  check('13. project chat keeps the original empty-state paragraph', ((await page.textContent('#empty p')) || '').length > 0 && (await page.textContent('#empty p')) !== SCENE_EMPTY);
+  const copyOpening = copyScenes.find(s => s.title === 'Opening');
+  await page.evaluate((id) => { location.hash = '#/s/' + id; }, copyOpening.id);
+  await waitView('scene');
+  await page.click('#hdrChat'); await waitView('chat');
+  check('13. scene chat empty-state paragraph mentions To scene', (await page.textContent('#empty p')) === SCENE_EMPTY, await page.textContent('#empty p'));
+  await sendAndWait('Place this');
+  await page.waitForFunction(() => { const m = Array.from(document.querySelectorAll('.msg.assistant')).pop(); return m && /Reply ok/.test(m.textContent) && m.querySelector('.act[data-a=scene]'); }, null, { timeout: 4000 }).catch(() => {});
+  const acts13 = await lastAsst().locator('.msg-actions .act').evaluateAll(els => els.map(e => e.getAttribute('data-a') + (e.hidden ? ':hidden' : '')));
+  check('13. reply has a fifth action "To scene", visible', acts13.join() === 'copy,export,read,card,scene' && await lastAsst().locator('.act[data-a=scene]').isVisible() && (await lastAsst().locator('.act[data-a=scene]').textContent()).trim() === 'To scene', acts13);
+  await lastAsst().locator('.act[data-a=scene]').click();
+  await page.waitForSelector('#menuOverlay.open');
+  const m1 = await menuActs();
+  check('13. menu: Append and Replace whole scene, no Replace selection', m1.join() === 'append,replace,cancel' && (await page.textContent('#menuTitle')) === 'To scene · Opening', [m1, await page.textContent('#menuTitle')]);
+  await menuPick('append');
+  check('13. append toast', await toastHas('Added to scene · version saved'));
+  check('13. hash becomes #/s/<id>', await waitHash(new RegExp('^#/s/' + copyOpening.id + '$')), await hash());
+  let s13 = await poll(async () => { const x = await sceneById(copyOpening.id); return x && x.blocks.length === 2 && x; });
+  check('13. scene gets a last block "Reply ok"', !!s13 && s13.blocks[s13.blocks.length - 1].text === 'Reply ok' && s13.blocks[0].text === copyOpening.blocks[0].text, s13 && s13.blocks);
+  check('13. a version with reason chat-append exists', (await versionsOf(copyOpening.id)).some(v => v.reason === 'chat-append'), (await versionsOf(copyOpening.id)).map(v => v.reason));
+  // Blocks selection, then the chat: Replace selection.
+  if ((await page.getAttribute('#viewScene', 'data-mode')) !== 'blocks') { await page.click('#hdrMode'); await page.waitForFunction(() => document.getElementById('viewScene').getAttribute('data-mode') === 'blocks'); }
+  await page.locator('#blockList .block').nth(0).locator('.block-handle').click();
+  await page.click('#hdrChat'); await waitView('chat');
+  await lastAsst().locator('.act[data-a=scene]').click();
+  await page.waitForSelector('#menuOverlay.open');
+  const m2 = await menuActs();
+  check('13. with a paragraph selected the menu offers Replace selection first', m2.join() === 'selection,append,replace,cancel', m2);
+  await menuPick('selection');
+  check('13. replace-selection toast', await toastHas('Replaced · version saved'));
+  s13 = await poll(async () => { const x = await sceneById(copyOpening.id); return x && x.blocks[0].text === 'Reply ok' && x; });
+  check('13. the selected paragraph is replaced, nothing else', !!s13 && s13.blocks.length === 2 && s13.blocks[0].text === 'Reply ok' && s13.blocks[1].text === 'Reply ok', s13 && s13.blocks);
+  check('13. chat-selection version and back on the scene', (await versionsOf(copyOpening.id)).some(v => v.reason === 'chat-selection') && await waitHash(new RegExp('^#/s/' + copyOpening.id + '$')) && (await page.locator('#blockList .block .block-text').first().textContent()) === 'Reply ok', await hash());
+  // Project chat opened fresh (the editor holds no scene): append goes through the store.
+  await page.goto(BASE + '/write/#/p/' + pid2 + '/chat');
+  await page.reload(); await ready();
+  await waitView('chat');
+  await lastAsst().locator('.act[data-a=scene]').click();
+  await page.waitForSelector('#menuOverlay.open');
+  const m3 = await menuActs();
+  check('13. project chat with a last scene: Append and Replace only', m3.join() === 'append,replace,cancel' && (await page.textContent('#menuTitle')) === 'To scene · Opening', [m3, await page.textContent('#menuTitle')]);
+  const lastText = (await lastAsst().locator('.msg-content, .content').first().textContent().catch(() => '')).trim();
+  await menuPick('append');
+  check('13. store path: toast and hash #/s/<id>', await toastHas('Added to scene · version saved') && await waitHash(new RegExp('^#/s/' + copyOpening.id + '$')), await hash());
+  s13 = await poll(async () => { const x = await sceneById(copyOpening.id); return x && x.blocks.length === 3 && x; });
+  check('13. store path appends the reply and saves a version', !!s13 && (!lastText || s13.blocks[2].text === lastText) && (await versionsOf(copyOpening.id)).filter(v => v.reason === 'chat-append').length === 2, [s13 && s13.blocks, lastText]);
+  // A project without scenes: no To scene.
+  await page.click('#hdrBack'); await waitView('outline');
+  await page.click('#hdrBack'); await waitView('library');
+  answers.push('Empty');
+  if (await page.isVisible('#libraryNew')) await page.click('#libraryNew'); else await page.click('#hdrNewProject');
+  await waitView('outline');
+  const pid3 = decodeURIComponent((await hash()).split('/')[2]);
+  await page.evaluate((id) => { location.hash = '#/p/' + id + '/chat'; }, pid3);
+  await waitView('chat');
+  await sendAndWait('No scenes here');
+  await page.waitForFunction(() => { const m = Array.from(document.querySelectorAll('.msg.assistant')).pop(); return m && m.querySelector('.act[data-a=scene]'); }, null, { timeout: 4000 }).catch(() => {});
+  check('13. project without scenes: To scene hidden, other four shown', (await lastAsst().locator('.act[data-a=scene]').count()) === 1 && !(await lastAsst().locator('.act[data-a=scene]').isVisible()) && (await lastAsst().locator('.act:visible').count()) === 4);
+  await page.screenshot({ path: OUT + 'p4-to-scene.png' });
+
   // ---- 12. Headers and console ----
   const allowed = new Set(['authorization', 'content-type']);
   const normal = new Set(['accept', 'accept-encoding', 'accept-language', 'content-length', 'origin', 'referer', 'user-agent', 'host', 'connection', 'cache-control', 'pragma', 'priority']);

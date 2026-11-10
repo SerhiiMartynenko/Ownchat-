@@ -110,7 +110,8 @@
   /* ---------- Scene: blocks surface ---------- */
   #viewScene{position:relative}
   #viewScene[data-mode="blocks"] #sceneText{display:none}
-  #viewScene[data-mode="write"] #blockList,#viewScene[data-mode="write"] #blockBar{display:none}
+  /* Write mode hides only the block list: the bar's hidden attribute decides in both modes. */
+  #viewScene[data-mode="write"] #blockList{display:none}
   #sceneSaved[data-state="saved"]{color:var(--ok)}
   #sceneSaved[data-state="saving"]{color:var(--dim)}
   #sceneSaved[data-state="edited"]{color:var(--accent)}
@@ -207,6 +208,7 @@
   .msg.user .msg-actions{justify-content:flex-end}
   .act{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:9px;font-size:12.5px;color:var(--dim);transition:background .15s,color .15s}
   .act .ic{width:15px;height:15px}
+  .act[hidden]{display:none}
   .act:active{background:var(--surface-2);color:var(--text)}
   .err{color:var(--danger);font-size:14.5px;line-height:1.5}
   .err strong{color:#ff8f8f}

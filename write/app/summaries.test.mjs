@@ -63,6 +63,13 @@ test("formatForSummary uses display and truncates", () => {
   assert.equal(formatForSummary({ role: "assistant", content: "abcdef" }, 3), "[Assistant]: abc […truncated]");
 });
 
+test("formatForSummary names the selection a message was sent with", () => {
+  const m = { role: "user", content: "[note]\n\nmake this darker", display: "make this darker",
+    selection: { label: "paragraphs 2\u20133", excerpt: "Bravo two. Charlie." } };
+  assert.equal(formatForSummary(m, 100), '[Author] (with paragraphs 2\u20133 of the scene selected: "Bravo two. Charlie."): make this darker');
+  assert.equal(formatForSummary({ role: "user", content: "a", display: "a", selection: null }, 100), "[Author]: a");
+});
+
 test("buildSummaryRequest contains the summary, card names and messages", () => {
   const r = buildSummaryRequest({ summary: "- old point", slice: [{ role: "user", content: "y".repeat(7000) }, { role: "assistant", content: "ok" }], cardNames: ["Liz", "Harbor"], targetWords: 300 });
   assert.equal(r.length, 2);

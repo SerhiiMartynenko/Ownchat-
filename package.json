@@ -1,1 +1,1 @@
-{"name":"ownchat","private":true,"type":"module","scripts":{"test":"node --test","e2e":"node e2e/phase1.cjs && node e2e/phase2.cjs && node e2e/phase3.cjs && node e2e/phase4.cjs && node e2e/phase5.cjs && node e2e/fallback.cjs","perf":"node e2e/perf.cjs"}}
+{"name":"ownchat","private":true,"type":"module","scripts":{"test":"node --test","e2e":"node e2e/phase1.cjs && node e2e/phase2.cjs && node e2e/phase3.cjs && node e2e/phase4.cjs && node e2e/phase5.cjs && node e2e/fallback.cjs && node e2e/selection.cjs","perf":"node e2e/perf.cjs"}}

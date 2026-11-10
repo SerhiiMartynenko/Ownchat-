@@ -8,6 +8,12 @@ export const CONTEXT_DEFAULTS = { totalBudget:24000, cardBudget:6000, maxVerbati
 
 export const SCENE_OMITTED_MARKER="[… earlier part of this scene omitted]\n\n";
 export const STORY_OMITTED_MARKER="[… earlier scenes omitted]\n\n";
+export const SCENE_OMITTED_AFTER_MARKER="\n\n[… later part of this scene omitted]";
+export const SELECTION_START="[[SELECTION]]";
+export const SELECTION_END="[[/SELECTION]]";
+export const SELECTION_NOTE="(The author has selected the passage between [[SELECTION]] and [[/SELECTION]] in the editor. "+
+  "The markers are not part of the text. \"This\", \"this part\" or \"the selection\" in the author's messages mean that passage. "+
+  "When asked to rewrite or replace it, give the new text for exactly that passage so it can be put back in its place.)";
 
 function s(v){ return typeof v==="string" ? v : ""; }
 
@@ -22,11 +28,13 @@ function systemText(brief, style){
 // Layer S: the current scene. Over budget, whole paragraphs are dropped from the start, then characters from
 // the start of the last remaining paragraph, so the end of the scene (nearest the cursor) is kept.
 function sceneLayer(scene, budget){
-  if(!scene || typeof scene!=="object") return { text:"", title:"", included:false, truncated:false, omittedTokens:0 };
-  var title=s(scene.title).trim(), body=s(scene.text).trim();
+  if(!scene || typeof scene!=="object") return { text:"", title:"", included:false, truncated:false, omittedTokens:0, selection:false };
+  var title=s(scene.title).trim(), raw=s(scene.text), body=raw.trim();
   var heading="## Current scene: "+(title || "Untitled");
+  var sel=selectionIn(scene.selection, raw, body);
+  if(sel) return markedSceneLayer(heading, title, body, sel, budget);
   var full=body ? heading+"\n"+body : heading;
-  if(estimateTokens(full)<=budget) return { text:full, title:title, included:true, truncated:false, omittedTokens:0 };
+  if(estimateTokens(full)<=budget) return { text:full, title:title, included:true, truncated:false, omittedTokens:0, selection:false };
   var prefix=heading+"\n"+SCENE_OMITTED_MARKER;
   var paras=body.split("\n\n");
   while(paras.length>1 && estimateTokens(prefix+paras.join("\n\n"))>budget) paras.shift();
@@ -41,7 +49,95 @@ function sceneLayer(scene, budget){
     kept=chars.slice(lo).join("");
   }
   var omitted=body.slice(0, body.length-kept.length);
-  return { text:prefix+kept, title:title, included:true, truncated:true, omittedTokens:estimateTokens(omitted) };
+  return { text:prefix+kept, title:title, included:true, truncated:true, omittedTokens:estimateTokens(omitted), selection:false };
+}
+
+function isInt(n){ return typeof n==="number" && isFinite(n) && Math.floor(n)===n; }
+
+// scene.selection {start, end}: code-unit offsets into the untrimmed scene.text, 0 <= start < end <= length.
+// Returns the offsets into the trimmed body (clamped), or null when invalid or empty after trimming.
+function selectionIn(sel, raw, body){
+  if(!sel || typeof sel!=="object" || !isInt(sel.start) || !isInt(sel.end)) return null;
+  if(sel.start<0 || sel.start>=sel.end || sel.end>raw.length) return null;
+  var lead=raw.length-raw.replace(/^\s+/, "").length;
+  var a=Math.max(0, Math.min(body.length, sel.start-lead)), b=Math.max(0, Math.min(body.length, sel.end-lead));
+  return a<b ? { start:a, end:b } : null;
+}
+
+// The scene layer with the selection marked in place. Over budget, the paragraphs holding the selection
+// are always kept (even when they alone exceed the budget); neighbours are added nearest first,
+// alternating after/before, while the layer fits. Omitted parts are flagged at the start and the end.
+function markedSceneLayer(heading, title, body, sel, budget){
+  var head=heading+"\n"+SELECTION_NOTE+"\n";
+  var mark=function(from, to){
+    return body.slice(from, sel.start)+SELECTION_START+body.slice(sel.start, sel.end)+SELECTION_END+body.slice(sel.end, to);
+  };
+  var full=head+mark(0, body.length);
+  if(estimateTokens(full)<=budget) return { text:full, title:title, included:true, truncated:false, omittedTokens:0, selection:true };
+  var paras=[], at=0;
+  body.split("\n\n").forEach(function(p){ paras.push({ start:at, end:at+p.length }); at+=p.length+2; });
+  var p0=0, p1=0;
+  paras.forEach(function(p, i){ if(p.start<=sel.start) p0=i; if(p.start<=sel.end-1) p1=i; });
+  var last=paras.length-1;
+  var build=function(lo, hi){
+    var from=Math.min(paras[lo].start, sel.start), to=Math.max(paras[hi].end, sel.end);
+    return head+(lo>0 ? SCENE_OMITTED_MARKER : "")+mark(from, to)+(hi<last ? SCENE_OMITTED_AFTER_MARKER : "");
+  };
+  var lo=p0, hi=p1, text=build(lo, hi);
+  var afterOpen=hi<last, beforeOpen=lo>0, turn="after";
+  if(estimateTokens(text)<=budget){
+    while(afterOpen || beforeOpen){
+      if(turn==="after" && afterOpen){
+        var ta=build(lo, hi+1);
+        if(estimateTokens(ta)<=budget){ hi++; text=ta; afterOpen=hi<last; } else afterOpen=false;
+      } else if(turn==="before" && beforeOpen){
+        var tb=build(lo-1, hi);
+        if(estimateTokens(tb)<=budget){ lo--; text=tb; beforeOpen=lo>0; } else beforeOpen=false;
+      }
+      turn=turn==="after" ? "before" : "after";
+    }
+  }
+  var from=Math.min(paras[lo].start, sel.start), to=Math.max(paras[hi].end, sel.end);
+  var omitted=body.slice(0, from)+body.slice(to);
+  return { text:text, title:title, included:true, truncated:lo>0 || hi<last,
+    omittedTokens:omitted ? estimateTokens(omitted) : 0, selection:true };
+}
+
+// How a selection is named: "paragraphs 4–6", "paragraph 4", "part of paragraph 5", "parts of paragraphs 4–5".
+export function selectionLabel(sel){
+  if(!sel || typeof sel!=="object") return "";
+  var a=Number(sel.paraFrom)||0, b=Number(sel.paraTo)||a;
+  if(a<1) return "";
+  var many=b>a, range=many ? a+"\u2013"+b : String(a);
+  if(sel.partial) return many ? "parts of paragraphs "+range : "part of paragraph "+range;
+  return many ? "paragraphs "+range : "paragraph "+range;
+}
+
+// A short quote of the selected text: the whole text (whitespace collapsed) when it is short, else its
+// first and last `words` words around an ellipsis.
+export function selectionExcerpt(text, words){
+  var k=isInt(words) && words>0 ? words : 8;
+  var w=s(text).split(/\s+/).filter(Boolean);
+  var cap=function(t){ return t.length>120 ? t.slice(0, 120)+"\u2026" : t; };
+  if(w.length<=k*2+2) return cap(w.join(" "));
+  return cap(w.slice(0, k).join(" "))+" \u2026 "+cap(w.slice(w.length-k).join(" "));
+}
+
+// What a user message stores about the selection it was sent with (span: a selectionSpan result).
+export function selectionMeta(span){
+  if(!span || typeof span!=="object" || !s(span.selected)) return null;
+  var m={ paraFrom:Number(span.paraFrom)||0, paraTo:Number(span.paraTo)||0, paraCount:Number(span.paraCount)||0,
+    partial:!!span.partial, excerpt:selectionExcerpt(span.selected) };
+  m.label=selectionLabel(m);
+  return m.label ? { label:m.label, paraFrom:m.paraFrom, paraTo:m.paraTo, paraCount:m.paraCount, partial:m.partial, excerpt:m.excerpt } : null;
+}
+
+// The line put before a user message sent with a selection, so the turn stays intelligible later.
+export function selectionNote(meta){
+  if(!meta || typeof meta!=="object") return "";
+  var label=s(meta.label) || selectionLabel(meta);
+  if(!label) return "";
+  return "[The author had "+label+" of the current scene selected: \""+s(meta.excerpt)+"\"]";
 }
 
 // Layer SF: summaries of earlier scenes, oldest first. Over budget, the earliest entries are dropped whole;
@@ -164,7 +260,7 @@ export function assembleContext(args){
         dropped:dropped, overBudget:cardsOver },
       { key:"story", label:"Story so far", tokens:tokSF, count:SF.count, dropped:SF.dropped, stale:SF.stale },
       { key:"scene", label:"Current scene", tokens:tokS, title:S.title, included:S.included,
-        truncated:S.truncated, omittedTokens:S.omittedTokens },
+        truncated:S.truncated, omittedTokens:S.omittedTokens, selection:S.selection },
       { key:"summary", label:"Summary", tokens:tokC, folded:upTo },
       { key:"recent", label:"Recent messages", tokens:tokD, count:recent.length, droppedUnsummarized:unfolded.length-recent.length },
       { key:"current", label:"Current message", tokens:curTokens }

@@ -221,6 +221,16 @@ Deviations from the design above:
   become cards with `status:"proposed"` and a `source`; `matchCards` ignores them
   until accepted. The bundle stays at version 1: scene threads are added as
   `chat/scene-*.json` files listed under `sceneThreads` in the manifest.
+- Selection in chat: when the editor holds a selection in the scene the chat sees,
+  the scene layer is built from the editor's draft with `[[SELECTION]]` and
+  `[[/SELECTION]]` inserted at the selection's offsets and a one-line note under the
+  heading. Over budget the layer keeps the paragraphs holding the selection and adds
+  neighbours nearest first, flagging omitted text at either end. The user message
+  stores a small `selection` record and its API content starts with a one-line note
+  (paragraph numbers and a short excerpt), so older turns stay intelligible after
+  the selection moves; the selected text itself is not repeated. A chip in the
+  composer switches the attachment off until the selection changes. In Blocks mode
+  only paragraph ranges reach the chat, because leaving a paragraph ends its edit.
 
 Phase 5:
 

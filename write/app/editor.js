@@ -178,3 +178,66 @@ export function selectionWindow(raw, start, end, n){
   res.paraIndex=ep;
   return res;
 }
+
+// Where a selection sits in the scene text as the chat context sees it (blocksToText(blocks): paragraphs
+// joined by a blank line). sel is one of:
+// - { range:{start, end} }                      a blocks range (whole paragraphs);
+// - { editing:{id, start, end, text} }          a text selection inside the paragraph being edited
+//                                               (text is that textarea's value; it wins over a range);
+// - { start, end, raw }                         a Write-mode selection over the textarea value raw.
+// Returns null when there is no usable selection (empty, whitespace only, or the text no longer matches
+// the blocks), else { before, selected, after, paraFrom, paraTo, paraCount, partial } with
+// before+selected+after === blocksToText(blocks); selected starts and ends on non-whitespace; paraFrom
+// and paraTo are 1-based; partial is true unless the selection covers whole paragraphs.
+export function selectionSpan(blocks, sel){
+  var bl = list(blocks), n = bl.length;
+  if(!n || !sel || typeof sel !== "object") return null;
+  var starts = [], pos = 0;
+  bl.forEach(function(b){ starts.push(pos); pos += b.text.length + 2; });
+  var text = bl.map(function(b){ return b.text; }).join("\n\n");
+  // Maps an offset of raw (whose paragraph spans are blocks base.. in order) to an offset of text.
+  function mapRaw(spans, base, off, len){
+    var o = Number(off);
+    o = isFinite(o) ? Math.max(0, Math.min(len, Math.floor(o))) : 0;
+    for(var j = 0; j < spans.length; j++){
+      if(o < spans[j].start) return starts[base + j];
+      if(o <= spans[j].end) return starts[base + j] + (o - spans[j].start);
+    }
+    var last = spans.length - 1;
+    return starts[base + last] + spans[last].text.length;
+  }
+  function matches(spans, base){
+    if(!spans.length || base < 0 || base + spans.length > n) return false;
+    return spans.every(function(sp, j){ return bl[base + j].text === sp.text; });
+  }
+  var a, b;
+  if(sel.editing && typeof sel.editing === "object"){
+    var ed = sel.editing, raw = str(ed.text), idx = -1;
+    for(var i = 0; i < n; i++){ if(bl[i].id === str(ed.id)){ idx = i; break; } }
+    var sp = paragraphSpans(raw);
+    if(idx < 0 || !matches(sp, idx)) return null;
+    a = mapRaw(sp, idx, ed.start, raw.length); b = mapRaw(sp, idx, ed.end, raw.length);
+  } else if(sel.range){
+    var r = normalizeRange(sel.range, n);
+    if(!r) return null;
+    a = starts[r.start]; b = starts[r.end] + bl[r.end].text.length;
+  } else if(typeof sel.raw === "string"){
+    var spw = paragraphSpans(sel.raw);
+    if(spw.length !== n || !matches(spw, 0)) return null;
+    a = mapRaw(spw, 0, sel.start, sel.raw.length); b = mapRaw(spw, 0, sel.end, sel.raw.length);
+  } else {
+    return null;
+  }
+  if(a > b){ var x = a; a = b; b = x; }
+  while(a < b && /\s/.test(text[a])) a++;
+  while(b > a && /\s/.test(text[b - 1])) b--;
+  if(a >= b) return null;
+  var pf = 0, pt = 0;
+  for(var k = 0; k < n; k++){
+    if(starts[k] <= a) pf = k;
+    if(starts[k] <= b - 1) pt = k;
+  }
+  var partial = a !== starts[pf] || b !== starts[pt] + bl[pt].text.length;
+  return { before: text.slice(0, a), selected: text.slice(a, b), after: text.slice(b),
+    paraFrom: pf + 1, paraTo: pt + 1, paraCount: n, partial: partial };
+}

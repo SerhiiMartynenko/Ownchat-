@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { memoryHandle } from "./db.js";
-import { createStore, emptyThread, normalizeThread, sceneThreadId, sceneTextHash, validStats, MAX_VERSIONS_PER_SCENE } from "./store.js";
+import { createStore, emptyThread, normalizeThread, normalizeMessageSelection, sceneThreadId, sceneTextHash, validStats, MAX_VERSIONS_PER_SCENE } from "./store.js";
 import { hashText } from "./util.js";
 import { blocksToText } from "./scene.js";
 
@@ -921,4 +921,22 @@ test("getOutline heals word totals that drifted", async () => {
   assert.equal(o.project.stats.words, 3);
   assert.deepEqual((await h.get("projects", p.id)).stats, { chapters: 2, scenes: 3, words: 3 });
   assert.equal((await store.listProjects())[0].stats.words, 3);
+});
+
+test("normalizeThread keeps a message's selection, sanitised, and drops unusable ones", () => {
+  const sel = { label: "paragraphs 2\u20133", paraFrom: 2, paraTo: 3, paraCount: 5, partial: false, excerpt: "Bravo two." };
+  const src = { messages: [
+    { id: "a", role: "user", content: "x", display: "x", selection: Object.assign({ extra: { deep: 1 } }, sel) },
+    { id: "b", role: "user", content: "y", selection: { label: 5 } },
+    { id: "c", role: "assistant", content: "z" },
+    { id: "d", role: "user", content: "w", selection: { label: "part of paragraph 4", paraFrom: "4", paraTo: -2, partial: "yes", excerpt: { x: 1 } } }
+  ] };
+  const t = normalizeThread(src);
+  assert.deepEqual(t.messages[0], { id: "a", role: "user", content: "x", display: "x", selection: sel });
+  assert.ok(!("selection" in t.messages[1]));
+  assert.equal(t.messages[2], src.messages[2]);
+  assert.deepEqual(t.messages[3].selection, { label: "part of paragraph 4", paraFrom: 4, paraTo: 0, paraCount: 0, partial: false, excerpt: "" });
+  assert.ok("selection" in src.messages[1], "input not mutated");
+  assert.equal(normalizeMessageSelection(null), null);
+  assert.equal(normalizeMessageSelection([]), null);
 });

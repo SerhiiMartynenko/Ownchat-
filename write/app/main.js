@@ -1,7 +1,7 @@
 import { DEFAULT_API_URL, FALLBACK_PROXY_URL, reasoningConfig, applyReasoning, validEndpoint, streamChat, probeAll } from "./api.js";
 import { uid, hashText } from "./util.js";
 import { normalizeBible, proposeFacts, listProposed, cardNames } from "./bible.js";
-import { assembleContext } from "./context.js";
+import { assembleContext, selectionMeta, selectionNote } from "./context.js";
 import { SUMMARY_DEFAULTS, planFold, runFold } from "./summaries.js";
 import { openDb, requestPersistence } from "./db.js";
 import { isIOS, isStandalone } from "./storage.js";
@@ -159,6 +159,12 @@ import { initStorageUI } from "./ui/storage.js";
   function buildUser(msg){
     var node = document.createElement("div");
     node.className = "msg user";
+    if(msg.selection && typeof msg.selection === "object" && msg.selection.label){
+      var tag = document.createElement("div");
+      tag.className = "msg-sel";
+      tag.textContent = "Selection \u00b7 " + msg.selection.label;
+      node.appendChild(tag);
+    }
     var bubble = document.createElement("div");
     bubble.className = "bubble";
     bubble.textContent = msg.display || "";
@@ -456,7 +462,7 @@ import { initStorageUI } from "./ui/storage.js";
     var gen = threadGen;
     var ctx;
     try{
-      ctx = assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(), storySoFar: storySoFarFor(),
+      ctx = assembleContext({ model: settings.model, bible: bible, scene: sceneWithSelection(), storySoFar: storySoFarFor(),
         thread: { messages: messages, summary: thread.summary, summarizedUpTo: thread.summarizedUpTo } });
     }catch(e){
       finalizeError(els, (e && e.message) ? e.message : "Could not build the request.", els.node);
@@ -498,6 +504,13 @@ import { initStorageUI } from "./ui/storage.js";
       content: buildUserContent(text),
       attachments: attachments.map(function(att){ return { name: att.name, size: att.size }; })
     };
+    // Sent with a selection: one note line before the text, so the turn still makes sense once the
+    // selection has moved on (the selected text itself is marked in the scene layer).
+    var selMeta = selectionMeta(attachedSelection());
+    if(selMeta){
+      userMsg.selection = selMeta;
+      userMsg.content = selectionNote(selMeta) + "\n\n" + userMsg.content;
+    }
     messages.push(userMsg);
     hideEmpty();
     buildUser(userMsg);
@@ -730,9 +743,66 @@ import { initStorageUI } from "./ui/storage.js";
   }
   function previewContext(){
     // The draft (possibly empty) is the would-be current message; every stored message is history.
-    return assembleContext({ model: settings.model, bible: bible, scene: sceneForContext(), storySoFar: storySoFarFor(),
+    return assembleContext({ model: settings.model, bible: bible, scene: sceneWithSelection(), storySoFar: storySoFarFor(),
       thread: { messages: messages, summary: thread ? thread.summary : "", summarizedUpTo: thread ? thread.summarizedUpTo : 0 },
       draft: input.value.trim() ? input.value : "" });
+  }
+  // The editor's live selection in the scene the chat sees (scene scope, or project scope with the scene
+  // chip on), or null.
+  function chatSelection(){
+    if(!sceneEditor || !activeScene || !sceneForContext()) return null;
+    var open = sceneEditor.current();
+    if(!open || open.id !== activeScene.id) return null;
+    var info = sceneEditor.selectionInfo();
+    return info && info.sceneId === activeScene.id ? info : null;
+  }
+  // The selection the next request carries: the live one unless the selection chip switched it off.
+  // The Off state lasts until the selection itself changes or the chat view is entered again.
+  var selOff = false, selKey = "";
+  function attachedSelection(){
+    var sel = chatSelection();
+    syncSelKey(sel);
+    return sel && !selOff ? sel : null;
+  }
+  function syncSelKey(sel){
+    var key = sel ? sel.sceneId + "|" + sel.before.length + "|" + sel.selected.length + "|" + sel.selected.slice(0, 64) : "";
+    if(key !== selKey){ selKey = key; selOff = false; }
+  }
+  // The scene for assembleContext: with an attached selection, the editor's draft text with the
+  // selection's offsets.
+  function sceneWithSelection(){
+    var sc = sceneForContext();
+    var sel = sc ? attachedSelection() : null;
+    if(!sc || !sel) return sc;
+    var text = sel.before + sel.selected + sel.after;
+    return Object.assign({}, sc, { text: text, selection: { start: sel.before.length, end: sel.before.length + sel.selected.length } });
+  }
+  function selectionChipLabel(sel){
+    if(sel.partial){
+      return sel.paraFrom === sel.paraTo ? "part of paragraph " + sel.paraFrom : "parts of paragraphs " + sel.paraFrom + "\u2013" + sel.paraTo;
+    }
+    var n = sel.paraTo - sel.paraFrom + 1;
+    return n + (n === 1 ? " paragraph" : " paragraphs");
+  }
+  function refreshSelChip(){
+    var chip = $("selChip");
+    var sel = thread ? chatSelection() : null;
+    syncSelKey(sel);
+    if(!sel){ chip.hidden = true; chip.classList.remove("on"); return; }
+    var on = !selOff;
+    $("selChipText").textContent = "Selection: " + selectionChipLabel(sel) + " \u00b7 " + (on ? "On" : "Off");
+    chip.classList.toggle("on", on);
+    chip.setAttribute("aria-pressed", on ? "true" : "false");
+    chip.hidden = false;
+  }
+  function toggleSelectionInContext(){
+    if(!chatSelection()) { refreshSelChip(); return; }
+    selOff = !selOff;
+    updateMeter();
+  }
+  // The editor's selection appeared, changed or cleared.
+  function onEditorSelection(){
+    if(chatShown()) updateMeter();
   }
   function refreshSceneChip(){
     var chip = $("sceneChip");
@@ -749,7 +819,7 @@ import { initStorageUI } from "./ui/storage.js";
     saveThread(); refreshSceneChip(); updateMeter();
   }
   function updateMeter(){
-    refreshSceneChip();
+    refreshSceneChip(); refreshSelChip();
     if(!thread) return;
     var hasDraft = !!input.value.trim();
     if(!messages.length && !hasDraft && !bibleHasContent() && !sceneForContext() && !storySoFarFor().length){ ctxMeter.hidden = true; lastBreakdown = null; return; }
@@ -799,7 +869,8 @@ import { initStorageUI } from "./ui/storage.js";
           }
         } else if(l.key === "scene"){
           if(l.included){
-            detail = (l.title || "Untitled scene") + (l.truncated ? " · start trimmed (~" + (l.omittedTokens || 0).toLocaleString() + " tokens left out)" : "");
+            detail = (l.title || "Untitled scene") + (l.selection ? " · selection marked" : "") +
+              (l.truncated ? (l.selection ? " · trimmed around the selection (~" : " · start trimmed (~") + (l.omittedTokens || 0).toLocaleString() + " tokens left out)" : "");
           } else {
             detail = activeScene && thread && thread.scope !== "scene" ? "off" : "no scene open";
           }
@@ -1321,6 +1392,7 @@ import { initStorageUI } from "./ui/storage.js";
   }
 
   function showChat(view){
+    selOff = false;
     setHeader(project.title, "");
     show(view === "split" ? "split" : "chat");
     if(historyDirty) renderHistoryNow();
@@ -1520,7 +1592,8 @@ import { initStorageUI } from "./ui/storage.js";
       onSaved: function(rec){
         if(activeScene && activeScene.id === rec.id) activeScene = rec;
         if(outlineShown()) refreshSidebarSoon();
-      } });
+      },
+      onSelectionChange: onEditorSelection });
     // Meta reads and writes go through main's queue so they cannot race the lastRoute saves.
     var metaStore = {
       getMeta: function(){ return metaQueue.then(function(){ return store.getMeta(); }); },
@@ -1545,6 +1618,7 @@ import { initStorageUI } from "./ui/storage.js";
     $("chatScopeScene").addEventListener("click", function(){ pickScope("scene"); });
     $("chatScopeProject").addEventListener("click", function(){ pickScope("project"); });
     $("sceneChip").addEventListener("click", toggleSceneInContext);
+    $("selChip").addEventListener("click", toggleSelectionInContext);
     $("openBible").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
     $("openSettings").addEventListener("click", function(){ if(sceneEditor) sceneEditor.flush(); });
     onMq(mqWide); onMq(mqSplit);

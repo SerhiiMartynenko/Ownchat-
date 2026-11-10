@@ -169,6 +169,13 @@ Features so far:
   sheet shows "Waiting for the model…" (or "Thinking…") with the seconds elapsed.
 - "To scene" on a chat reply puts the reply into the open scene: replace the
   editor's selection, append it, or replace the whole scene (a version is saved).
+- The chat sees your selection: select paragraphs (or, in Write mode, any span
+  of text) and open the chat, and the request still carries the whole scene but
+  with the selected passage marked in place, so "make this darker" means that
+  passage and the model knows what surrounds it. A chip above the message box
+  shows what is attached ("Selection: 3 paragraphs · On"); tap it to switch it
+  off. A long scene is trimmed around the selection, never through it. Messages
+  sent with a selection keep a small "Selection · paragraphs 4–6" tag.
 - Versions: accepting an AI change snapshots the previous text; "Save version"
   and "Versions…" live in the scene menu. Up to 30 versions per scene are kept on
   the device (they are not part of the export bundle).

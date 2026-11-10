@@ -67,6 +67,7 @@ export function initBlocks(opts){
     range = r;
     rows().forEach(function(row, i){ row.classList.toggle("selected", !!r && i >= r.start && i <= r.end); });
     updateBar();
+    if(opts.onSelect) opts.onSelect();
   }
   // In Write mode ui/scene.js owns the bar (it follows the textarea selection), so the blocks state
   // (a range left over from blocks mode, a paint after Accept) must not show or hide it then.
@@ -241,7 +242,7 @@ export function initBlocks(opts){
     var act = btn.getAttribute("data-act");
     if(act && opts.onAction) opts.onAction(act);
   });
-  document.addEventListener("selectionchange", function(){ if(editing) updateBar(); });
+  document.addEventListener("selectionchange", function(){ if(editing){ updateBar(); if(opts.onSelect) opts.onSelect(); } });
 
   var addBtn = footer && footer.querySelector("#blockAdd");
   var contBtn = footer && footer.querySelector("#blockContinue");

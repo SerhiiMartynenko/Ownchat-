@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   commitEdit, rangeFromIndex, toggleInRange, normalizeRange, applyReplacement, insertAfter,
-  spliceSelection, windowAround, insertionWindow, selectionWindow
+  spliceSelection, windowAround, insertionWindow, selectionWindow, selectionSpan
 } from "./editor.js";
+import { blocksToText, textToBlocks } from "./scene.js";
 
 const mkUid = (prefix = "n") => { let i = 0; return () => prefix + (++i); };
 const B = (...texts) => texts.map((t, i) => ({ id: "b" + (i + 1), text: t }));
@@ -205,4 +206,67 @@ test("selectionWindow: paragraph indices agree with splitParagraphs and CRLF tex
   assert.equal(w.paraIndex, 1);
   assert.deepEqual(tx(w.before), ["A one.", "B "]);
   assert.deepEqual(tx(w.after), [".", "C three."]);
+});
+
+test("selectionSpan: blocks range covers whole paragraphs", () => {
+  const bs = B("One.", "Two two.", "Three.", "Four.");
+  const r = selectionSpan(bs, { range: { start: 1, end: 2 } });
+  assert.equal(r.before + r.selected + r.after, blocksToText(bs));
+  assert.deepEqual(r, { before: "One.\n\n", selected: "Two two.\n\nThree.", after: "\n\nFour.", paraFrom: 2, paraTo: 3, paraCount: 4, partial: false });
+  assert.deepEqual(selectionSpan(bs, { range: { start: 3, end: 1 } }).selected, "Two two.\n\nThree.\n\nFour.");
+  assert.equal(selectionSpan(bs, { range: null }), null);
+  assert.equal(selectionSpan(bs, { range: { start: 9, end: 9 } }), null);
+  assert.equal(selectionSpan([], { range: { start: 0, end: 0 } }), null);
+  assert.equal(selectionSpan(bs, null), null);
+});
+
+test("selectionSpan: Write-mode raw offsets land on the blocks text", () => {
+  const raw = "  First line here.\n\n\nSecond para, with words.\r\nThird.  \n";
+  const bs = textToBlocks(raw, [], mkUid());
+  const text = blocksToText(bs);
+  const s = raw.indexOf("with"), e = s + "with words".length;
+  const r = selectionSpan(bs, { start: s, end: e, raw });
+  assert.equal(r.selected, "with words");
+  assert.equal(r.before + r.selected + r.after, text);
+  assert.equal(r.before, "First line here.\n\nSecond para, ");
+  assert.deepEqual([r.paraFrom, r.paraTo, r.paraCount, r.partial], [2, 2, 3, true]);
+  // Whitespace edges are trimmed: from inside the gap before paragraph 2 to the gap after paragraph 3.
+  const w = selectionSpan(bs, { start: raw.indexOf("\n\n\n"), end: raw.length, raw });
+  assert.equal(w.selected, "Second para, with words.\n\nThird.");
+  assert.deepEqual([w.paraFrom, w.paraTo, w.partial], [2, 3, false]);
+  // Reversed offsets are swapped; whole raw is everything.
+  const all = selectionSpan(bs, { start: raw.length, end: 0, raw });
+  assert.equal(all.selected, text);
+  assert.deepEqual([all.paraFrom, all.paraTo, all.partial], [1, 3, false]);
+  // Spanning a paragraph break mid-sentence.
+  const x = selectionSpan(bs, { start: raw.indexOf("here"), end: raw.indexOf("para,"), raw });
+  assert.equal(x.selected, "here.\n\nSecond");
+  assert.deepEqual([x.paraFrom, x.paraTo, x.partial], [1, 2, true]);
+});
+
+test("selectionSpan: empty, whitespace-only and mismatched selections are null", () => {
+  const raw = "A b.\n\n\n\nC d.";
+  const bs = textToBlocks(raw, [], mkUid());
+  assert.equal(selectionSpan(bs, { start: 3, end: 3, raw }), null);
+  assert.equal(selectionSpan(bs, { start: raw.indexOf("\n"), end: raw.indexOf("C"), raw }), null);
+  assert.equal(selectionSpan(bs, { start: 0, end: 2, raw: "Other text." }), null);
+  assert.equal(selectionSpan(B("", "x"), { range: { start: 0, end: 0 } }), null);
+});
+
+test("selectionSpan: a selection inside the paragraph being edited", () => {
+  const bs = B("One.", "Two words here.", "Three.");
+  const ed = { id: "b2", text: "Two words here.", start: 4, end: 9 };
+  const r = selectionSpan(bs, { range: null, editing: ed });
+  assert.equal(r.selected, "words");
+  assert.equal(r.before, "One.\n\nTwo ");
+  assert.deepEqual([r.paraFrom, r.paraTo, r.paraCount, r.partial], [2, 2, 3, true]);
+  // The whole paragraph selected in the textarea is not partial; editing wins over a range.
+  const w = selectionSpan(bs, { range: { start: 0, end: 0 }, editing: { id: "b2", text: "Two words here.", start: 0, end: 15 } });
+  assert.deepEqual([w.selected, w.partial], ["Two words here.", false]);
+  // The edited text was split into two paragraphs (the draft blocks follow commitEdit).
+  const split = B("One.", "Two", "words.", "Three.");
+  const s = selectionSpan(split, { editing: { id: "b2", text: "Two\n\nwords.", start: 0, end: 12 } });
+  assert.deepEqual([s.selected, s.paraFrom, s.paraTo, s.partial], ["Two\n\nwords.", 2, 3, false]);
+  assert.equal(selectionSpan(bs, { editing: { id: "zz", text: "x", start: 0, end: 1 } }), null);
+  assert.equal(selectionSpan(bs, { editing: { id: "b2", text: "Changed.", start: 0, end: 3 } }), null);
 });

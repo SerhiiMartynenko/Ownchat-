@@ -290,3 +290,11 @@ test("invalid scene thread files are skipped with a warning", () => {
   assert.equal(back.warnings[1], "Scene chat for s2 is not valid; skipped");
   assert.ok(back.warnings[2].includes("chat/scene-s3.json"));
 });
+
+test("a user message's selection survives the round trip", () => {
+  const data = fixture();
+  const selection = { label: "part of paragraph 2", paraFrom: 2, paraTo: 2, paraCount: 3, partial: true, excerpt: "the town" };
+  data.thread.messages[0] = Object.assign({}, data.thread.messages[0], { display: "Hi", selection });
+  const back = parseBundle(buildBundle(data, { now: NOW }).files, { uid: counter() });
+  assert.deepEqual(back.thread.messages[0].selection, selection);
+});

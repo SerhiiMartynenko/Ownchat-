@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assembleContext, CONTEXT_DEFAULTS, STORY_OMITTED_MARKER } from "./context.js";
+import { assembleContext, CONTEXT_DEFAULTS, STORY_OMITTED_MARKER, SCENE_OMITTED_MARKER, SCENE_OMITTED_AFTER_MARKER,
+  SELECTION_START, SELECTION_END, SELECTION_NOTE, selectionLabel, selectionExcerpt, selectionMeta, selectionNote } from "./context.js";
 import { newCard, cardToText } from "./bible.js";
 import { estimateTokens } from "./util.js";
 
@@ -196,7 +197,7 @@ test("no scene: output identical to the pre-scene request (anthropic and others)
     assert.equal(JSON.stringify(an.messages), JSON.stringify(expectedAnthropic));
     assert.equal(JSON.stringify(op.messages), JSON.stringify(expectedOther));
     const L = op.breakdown.layers[3];
-    assert.deepEqual(L, { key: "scene", label: "Current scene", tokens: 0, title: "", included: false, truncated: false, omittedTokens: 0 });
+    assert.deepEqual(L, { key: "scene", label: "Current scene", tokens: 0, title: "", included: false, truncated: false, omittedTokens: 0, selection: false });
     assert.ok(!JSON.stringify(op.messages).includes(SCENE_HEAD));
     assert.equal(an.breakdown.cacheBreakpoints, 3);
   }
@@ -387,4 +388,124 @@ test("story-so-far content does not pull cards in", () => {
   assert.deepEqual(r.breakdown.layers[1].cards, []);
   assert.equal(r.breakdown.layers.length, 7);
   assert.equal(r.breakdown.total, sumLayers(r.breakdown));
+});
+
+// ---- Selection inside the current scene ----
+
+const SEL_PARAS = ["Alpha one starts here.", "Bravo two goes on.", "Charlie three, the middle part.", "Delta four.", "Echo five ends."];
+const SEL_TEXT = SEL_PARAS.join("\n\n");
+const sysOf = (r) => r.messages[0].content;
+const sceneLayerOf = (r) => r.breakdown.layers.find(l => l.key === "scene");
+
+test("selection: without one the scene layer is unchanged and has no note", () => {
+  const base = assembleContext({ model: "x", ...richArgs(), scene: { title: "T", text: SEL_TEXT } });
+  for (const selection of [undefined, null, {}, { start: 3, end: 3 }, { start: 5, end: 2 }, { start: -1, end: 4 },
+    { start: 0, end: SEL_TEXT.length + 1 }, { start: 1.5, end: 4 }, { start: "1", end: "4" }]) {
+    const r = assembleContext({ model: "x", ...richArgs(), scene: { title: "T", text: SEL_TEXT, selection } });
+    assert.deepEqual(r.messages, base.messages, JSON.stringify(selection));
+    assert.ok(!sysOf(r).includes(SELECTION_NOTE) && !sysOf(r).includes(SELECTION_START));
+    assert.equal(sceneLayerOf(r).selection, false);
+  }
+  assert.ok(sysOf(base).includes(SCENE_HEAD + "T\n" + SEL_TEXT));
+});
+
+test("selection: markers at exact offsets for whole paragraphs and a mid-sentence span", () => {
+  const start = SEL_TEXT.indexOf("Bravo"), end = SEL_TEXT.indexOf("part.") + "part.".length;
+  const r = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), scene: { title: "T", text: SEL_TEXT, selection: { start, end } } });
+  const expected = SCENE_HEAD + "T\n" + SELECTION_NOTE + "\n" + SEL_TEXT.slice(0, start) + SELECTION_START + SEL_TEXT.slice(start, end) + SELECTION_END + SEL_TEXT.slice(end);
+  assert.equal(sysOf(r), expected);
+  assert.ok(sysOf(r).includes("\n\n[[SELECTION]]Bravo two goes on.\n\nCharlie three, the middle part.[[/SELECTION]]\n\nDelta"));
+  assert.equal(sceneLayerOf(r).selection, true);
+  assert.equal(sceneLayerOf(r).truncated, false);
+  const s2 = SEL_TEXT.indexOf("three"), e2 = s2 + "three, the".length;
+  const m = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), scene: { title: "", text: SEL_TEXT, selection: { start: s2, end: e2 } } });
+  assert.ok(sysOf(m).includes("Charlie [[SELECTION]]three, the[[/SELECTION]] middle part."), sysOf(m));
+  assert.ok(sysOf(m).startsWith(SCENE_HEAD + "Untitled\n" + SELECTION_NOTE + "\nAlpha"));
+});
+
+test("selection: offsets stay right when the scene text has leading whitespace", () => {
+  const raw = "\n  " + SEL_TEXT + "  \n";
+  const s0 = raw.indexOf("Delta"), e0 = s0 + "Delta four.".length;
+  const r = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), scene: { title: "T", text: raw, selection: { start: s0, end: e0 } } });
+  assert.ok(sysOf(r).endsWith("[[SELECTION]]Delta four.[[/SELECTION]]\n\nEcho five ends."), sysOf(r));
+  // A selection of only the trimmed whitespace is ignored.
+  const w = assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]), scene: { title: "T", text: raw, selection: { start: 0, end: 3 } } });
+  assert.equal(sceneLayerOf(w).selection, false);
+});
+
+test("selection: card matching scans the plain scene text", () => {
+  const cards = [newCard({ id: "c1", name: "Bravo", body: "A card." })];
+  const r = assembleContext({ model: "x", bible: bible({ cards }), thread: thread([u("go")]), scene: { title: "T", text: SEL_TEXT, selection: { start: 0, end: 5 } } });
+  assert.deepEqual(r.breakdown.layers[1].cards.map(c => c.name), ["Bravo"]);
+});
+
+const LONG = Array.from({ length: 12 }, (_, i) => "Para" + i + " " + "w".repeat(60) + ".");
+const LONG_TEXT = LONG.join("\n\n");
+const longSel = (i, j) => ({ start: LONG_TEXT.indexOf("Para" + i + " "), end: LONG_TEXT.indexOf("Para" + j + " ") + LONG[j].length });
+const runLong = (sel, budget) => assembleContext({ model: "x", bible: bible(), thread: thread([u("go")]),
+  scene: { title: "L", text: LONG_TEXT, selection: sel }, options: { sceneBudget: budget } });
+
+test("selection: truncation in the middle keeps the selection and flags both ends", () => {
+  const budget = 200;
+  const r = runLong(longSel(5, 6), budget);
+  const sys = sysOf(r), L = sceneLayerOf(r);
+  assert.ok(sys.startsWith(SCENE_HEAD + "L\n" + SELECTION_NOTE + "\n" + SCENE_OMITTED_MARKER), sys.slice(0, 400));
+  assert.ok(sys.endsWith(SCENE_OMITTED_AFTER_MARKER));
+  assert.ok(sys.includes(SELECTION_START + LONG[5] + "\n\n" + LONG[6] + SELECTION_END));
+  assert.ok(!sys.includes("Para0 ") && !sys.includes("Para11 "));
+  assert.ok(L.truncated && L.selection && L.tokens <= budget && L.omittedTokens > 0, JSON.stringify(L));
+  // Neighbours are added nearest first: the kept paragraphs are contiguous around the selection.
+  const kept = LONG.map((p, i) => sys.includes(p.slice(0, 7)) ? i : -1).filter(i => i >= 0);
+  assert.deepEqual(kept, Array.from({ length: kept.length }, (_, k) => kept[0] + k));
+  assert.ok(kept.includes(4) && kept.includes(7), JSON.stringify(kept));
+  assert.equal(L.tokens, estimateTokens(sys));
+});
+
+test("selection: truncation at the end keeps only the leading marker; at the start only the trailing one", () => {
+  const atEnd = sysOf(runLong(longSel(11, 11), 120));
+  assert.ok(atEnd.includes(SCENE_OMITTED_MARKER) && !atEnd.includes(SCENE_OMITTED_AFTER_MARKER));
+  assert.ok(atEnd.endsWith(SELECTION_START + LONG[11] + SELECTION_END));
+  const atStart = sysOf(runLong(longSel(0, 0), 120));
+  assert.ok(!atStart.includes(SCENE_OMITTED_MARKER) && atStart.endsWith(SCENE_OMITTED_AFTER_MARKER));
+  assert.ok(atStart.startsWith(SCENE_HEAD + "L\n" + SELECTION_NOTE + "\n" + SELECTION_START + LONG[0]));
+});
+
+test("selection: an oversize selection is kept whole", () => {
+  const r = runLong(longSel(3, 9), 60);
+  const sys = sysOf(r), L = sceneLayerOf(r);
+  assert.ok(sys.includes(SELECTION_START + LONG.slice(3, 10).join("\n\n") + SELECTION_END));
+  assert.ok(sys.includes(SCENE_OMITTED_MARKER) && sys.endsWith(SCENE_OMITTED_AFTER_MARKER));
+  assert.ok(!sys.includes("Para2 ") && !sys.includes("Para10 "));
+  assert.ok(L.truncated && L.tokens > 60);
+  // A partial selection inside one long paragraph keeps that whole paragraph.
+  const s0 = LONG_TEXT.indexOf("Para4 ") + 2;
+  const p = sysOf(runLong({ start: s0, end: s0 + 10 }, 20));
+  assert.ok(p.includes("Pa" + SELECTION_START + LONG[4].slice(2, 12) + SELECTION_END + LONG[4].slice(12)), p);
+});
+
+test("selection: anthropic parts stay within 4 cache breakpoints", () => {
+  const r = assembleContext({ model: "anthropic/m", ...richArgs(), storySoFar: [{ title: "Before", summary: "Earlier." }],
+    scene: { title: "T", text: SEL_TEXT, selection: { start: 0, end: 5 } } });
+  const parts = r.messages[0].content;
+  assert.ok(Array.isArray(parts) && parts.length === 4);
+  for (const p of parts) assert.deepEqual(p.cache_control, { type: "ephemeral" });
+  assert.equal(r.breakdown.cacheBreakpoints, 4);
+  assert.ok(parts[2].text.startsWith(SCENE_HEAD + "T\n" + SELECTION_NOTE + "\n" + SELECTION_START + "Alpha"));
+});
+
+test("selection labels, excerpts, meta and the message note", () => {
+  assert.equal(selectionLabel({ paraFrom: 4, paraTo: 6, partial: false }), "paragraphs 4\u20136");
+  assert.equal(selectionLabel({ paraFrom: 4, paraTo: 4, partial: false }), "paragraph 4");
+  assert.equal(selectionLabel({ paraFrom: 5, paraTo: 5, partial: true }), "part of paragraph 5");
+  assert.equal(selectionLabel({ paraFrom: 4, paraTo: 5, partial: true }), "parts of paragraphs 4\u20135");
+  assert.equal(selectionLabel(null), "");
+  assert.equal(selectionExcerpt("  short\n\ntext here "), "short text here");
+  const words = Array.from({ length: 30 }, (_, i) => "w" + i).join(" ");
+  assert.equal(selectionExcerpt(words), "w0 w1 w2 w3 w4 w5 w6 w7 \u2026 w22 w23 w24 w25 w26 w27 w28 w29");
+  const meta = selectionMeta({ before: "x", selected: "Bravo two.\n\nCharlie.", after: "", paraFrom: 2, paraTo: 3, paraCount: 5, partial: false });
+  assert.deepEqual(meta, { label: "paragraphs 2\u20133", paraFrom: 2, paraTo: 3, paraCount: 5, partial: false, excerpt: "Bravo two. Charlie." });
+  assert.equal(selectionNote(meta), '[The author had paragraphs 2\u20133 of the current scene selected: "Bravo two. Charlie."]');
+  assert.equal(selectionMeta(null), null);
+  assert.equal(selectionMeta({ selected: "" }), null);
+  assert.equal(selectionNote(null), "");
 });

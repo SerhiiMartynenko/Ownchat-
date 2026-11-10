@@ -44,6 +44,9 @@ export function formatForSummary(msg, maxChars){
   var user=msg.role==="user";
   var text=user && typeof msg.display==="string" && msg.display ? msg.display : String(msg.content||"");
   if(text.length>limit) text=text.slice(0, limit)+" […truncated]";
+  // A message sent with a selection: say what "this" referred to.
+  var sel=user && msg.selection && typeof msg.selection==="object" && typeof msg.selection.label==="string" ? msg.selection : null;
+  if(sel && sel.label) return "[Author] (with "+sel.label+" of the scene selected: \""+String(sel.excerpt||"")+"\"): "+text;
   return (user ? "[Author]: " : "[Assistant]: ")+text;
 }
 

@@ -20,10 +20,28 @@ function resetSummary(t){
   t.summary = ""; t.summarizedUpTo = 0; t.summarizedUpToId = null; t.summaryModel = ""; t.summaryUpdatedAt = 0;
 }
 
+// The selection a user message was sent with: plain strings, numbers and booleans only; null when unusable.
+export function normalizeMessageSelection(sel){
+  if(!sel || typeof sel !== "object" || Array.isArray(sel)) return null;
+  var num = function(v){ var n = Number(v); return isFinite(n) && n >= 0 ? Math.floor(n) : 0; };
+  var text = function(v, max){ return typeof v === "string" ? v.slice(0, max) : ""; };
+  var out = { label: text(sel.label, 80), paraFrom: num(sel.paraFrom), paraTo: num(sel.paraTo), paraCount: num(sel.paraCount),
+    partial: sel.partial === true, excerpt: text(sel.excerpt, 400) };
+  return out.label ? out : null;
+}
+
 export function normalizeThread(rec){
   var src = rec && typeof rec === "object" ? rec : {};
   var t = Object.assign(emptyThread(src.id, src.projectId), src);
   if(!Array.isArray(t.messages)) t.messages = [];
+  if(t.messages.some(function(m){ return m && typeof m === "object" && "selection" in m; })){
+    t.messages = t.messages.map(function(m){
+      if(!m || typeof m !== "object" || !("selection" in m)) return m;
+      var c = Object.assign({}, m), sel = normalizeMessageSelection(m.selection);
+      if(sel) c.selection = sel; else delete c.selection;
+      return c;
+    });
+  }
   t.summary = typeof t.summary === "string" ? t.summary : "";
   t.summarizedUpTo = Math.max(0, Number(t.summarizedUpTo) || 0);
   if(t.summarizedUpTo > 0){

@@ -6,8 +6,10 @@
 // store.saveSceneWithVersion so the replaced text is kept as a version. The action bar acts on the
 // blocks selection in Blocks mode and on the textarea's native selection in Write mode (see syncWriteBar).
 // applyText puts a chat reply into the scene through the same apply path as Accept.
+// selectionInfo tells the chat where the current selection sits in the scene text; deps.onSelectionChange
+// is called (coalesced) when the selection appears, changes or clears, and when the scene or mode changes.
 import { textToBlocks, blocksToText, countWords, splitParagraphs } from "../scene.js";
-import { applyReplacement, insertAfter, spliceSelection, windowAround, insertionWindow, normalizeRange, selectionWindow } from "../editor.js";
+import { applyReplacement, insertAfter, spliceSelection, windowAround, insertionWindow, normalizeRange, selectionWindow, selectionSpan } from "../editor.js";
 import { ACTIONS, TONES, ACTION_THINKING, buildActionRequest, cleanProse, looksLikeChat } from "../rewrite.js";
 import { initBlocks } from "./blocks.js";
 import { initPreview } from "./preview.js";
@@ -36,6 +38,7 @@ export function initSceneEditor(deps){
     onChange: function(){ wordsSoon(); schedule(); },
     onInput: function(){ wordsSoon(); schedule(); },
     onAction: function(act){ runAction(act); },
+    onSelect: function(){ selectionSoon(); },
     onContinueAtEnd: function(){ runAction("continue", { atEnd: true }); } });
   var preview = initPreview({ $: $ });
   var versions = initVersions({ $: $, store: store, toast: toast, preview: preview,
@@ -121,6 +124,7 @@ export function initSceneEditor(deps){
     if(has) writeSel = { start: Math.min(a, b), end: Math.max(a, b), raw: textEl.value };
     else if(document.activeElement === textEl) writeSel = null;
     barEl.hidden = !has;
+    selectionSoon();
   }
   // The selection an action or a chat reply applies to: the live one, else the kept one while the text
   // is unchanged.
@@ -135,6 +139,49 @@ export function initSceneEditor(deps){
     if(typeof e === "number") try{ textEl.setSelectionRange(e, e); }catch(err){}
     writeSel = null;
     barEl.hidden = true;
+    selectionSoon();
+  }
+
+  /* ----- Selection for the chat ----- */
+  // Where the selection sits in the draft's scene text (see selectionSpan), or null. Reads only: no flush,
+  // no commit, no ids allocated.
+  function selectionInfo(){
+    if(!scene) return null;
+    var span;
+    if(mode === "write"){
+      var ws = currentWriteSel();
+      if(!ws) return null;
+      var blocks = splitParagraphs(ws.raw).map(function(t){ return { id: "", text: t }; });
+      span = selectionSpan(blocks, ws);
+    } else {
+      var sel = blocksUI.getSelection();
+      if(!sel.range && !sel.editing) return null;
+      span = selectionSpan(blocksUI.getBlocks(), sel);
+    }
+    return span ? Object.assign({ sceneId: scene.id }, span) : null;
+  }
+  // A cheap signature of the selection; onSelectionChange fires (once per task) only when it changed.
+  var selSig = "", selTimer = 0;
+  function selectionSig(){
+    if(!scene) return "";
+    if(mode === "write"){
+      var ws = currentWriteSel();
+      return scene.id + "|w|" + (ws ? ws.start + ":" + ws.end + ":" + ws.raw.length : "");
+    }
+    var sel = blocksUI.getSelection();
+    var r = sel.range ? sel.range.start + "-" + sel.range.end : "";
+    var ed = sel.editing ? sel.editing.id + ":" + sel.editing.start + ":" + sel.editing.end + ":" + sel.editing.text.length : "";
+    return scene.id + "|b|" + r + "|" + ed;
+  }
+  function selectionSoon(){
+    if(selTimer || !deps.onSelectionChange) return;
+    selTimer = setTimeout(function(){
+      selTimer = 0;
+      var sig = selectionSig();
+      if(sig === selSig) return;
+      selSig = sig;
+      deps.onSelectionChange();
+    }, 30);
   }
 
   /* ----- Surfaces ----- */
@@ -147,6 +194,7 @@ export function initSceneEditor(deps){
     } else {
       blocksUI.render(blocks);
     }
+    selectionSoon();
   }
 
   // Takes a record written by the store (replace or restore) as the new saved state and shows it.
@@ -215,7 +263,7 @@ export function initSceneEditor(deps){
     closeSheets();
     blocksUI.commitEditing();
     var p = flush();
-    return p.then(function(){ scene = null; });
+    return p.then(function(){ scene = null; selectionSoon(); });
   }
   function current(){ return scene; }
   function hasSelection(){
@@ -513,5 +561,5 @@ export function initSceneEditor(deps){
 
   return { open: open, flush: flush, close: close, current: current, setMode: setMode, mode: getMode,
     replaceBlocks: replaceBlocks, runAction: runAction, saveVersion: saveVersion, openVersions: openVersions,
-    renamed: renamed, hasSelection: hasSelection, applyText: applyText };
+    renamed: renamed, hasSelection: hasSelection, applyText: applyText, selectionInfo: selectionInfo };
 }
